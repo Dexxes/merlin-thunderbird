@@ -2,7 +2,7 @@
 
 A Thunderbird add-on for saving links and pages to [Merlin](https://github.com/), a
 cross-platform read-it-later app backed by either a Nextcloud instance
-(`merlin-nextcloud`) or an independent standalone server (`merlin-server`).
+([`merlin-nextcloud`](https://github.com/Dexxes/merlin-nextcloud/)) or an independent standalone server ([`merlin-standalone-server`](https://github.com/Dexxes/merlin-standalone-server)).
 
 Save a link straight from an email — or the page you're currently viewing — to your
 Merlin reading list via the context menu, optionally tagging it on the way in.
@@ -11,7 +11,7 @@ Merlin reading list via the context menu, optionally tagging it on the way in.
 
 - **Save link / save page** from the right-click context menu, with or without tags
 - Works against either backend: a Nextcloud instance running the Merlin app, or a
-  standalone `merlin-server`
+  [`merlin-standalone-server`](https://github.com/Dexxes/merlin-standalone-server)
 - **Nextcloud Login Flow** support — connect without typing an app password by hand
 - Credentials are stored locally (`storage.local`), encrypted at rest with AES-GCM;
   never synced
@@ -21,8 +21,8 @@ Merlin reading list via the context menu, optionally tagging it on the way in.
 ## Requirements
 
 - Thunderbird 115 or later
-- A reachable Merlin backend: either a Nextcloud instance with the `merlin-nextcloud`
-  app installed, or a `merlin-server` instance
+- A reachable Merlin backend: either a Nextcloud instance with the [`merlin-nextcloud`](https://github.com/Dexxes/merlin-nextcloud/)
+  app installed, or a [`merlin-standalone-server`](https://github.com/Dexxes/merlin-standalone-server) instance
 
 ## Installation
 
