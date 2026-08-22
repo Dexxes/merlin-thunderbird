@@ -34,7 +34,7 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "merlin-thunderbird@nextcloud",
-      "strict_min_version": "115.0"
+      "strict_min_version": "128.0"
     }
   },
 
