@@ -9,6 +9,12 @@ const t = (key, subs) => browser.i18n.getMessage(key, subs);
 // Tags selected via chips (independent from the text input)
 const selectedChipTags = new Set();
 
+// Guards against pasting an unbounded comma-separated string into the tag
+// input — matches the server's own tag-name column width, kept in sync
+// manually (no shared module between extension and backend).
+const MAX_TAG_LENGTH = 100;
+const MAX_TAGS       = 50;
+
 document.addEventListener('DOMContentLoaded', async () => {
 
   // ─── Load pending save data ──────────────────────────────────────────────────
@@ -33,10 +39,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Collect tags from both the text input and chip selections, deduplicated
     const inputTags = $('tagsInput').value
       .split(',')
-      .map(t => t.trim())
+      .map(t => t.trim().slice(0, MAX_TAG_LENGTH))
       .filter(Boolean);
 
-    const tags = [...new Set([...selectedChipTags, ...inputTags])];
+    const tags = [...new Set([...selectedChipTags, ...inputTags])].slice(0, MAX_TAGS);
 
     let windowId = null;
     try {
@@ -69,13 +75,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // ─── Fetch & render existing tags ─────────────────────────────────────────────
 
+// Renders a single status/empty/error message via the DOM API (no innerHTML) —
+// keeps this file consistent with background.js's renderFlyout(), so an
+// interpolated value can never be mistaken for markup, even if a future
+// change starts passing through server-supplied text.
+function setChipsMessage(container, className, text) {
+  const span = document.createElement('span');
+  span.className   = className;
+  span.textContent = text;
+  container.replaceChildren(span);
+}
+
 async function loadExistingTags(pendingSave) {
   const spinner   = $('tagsSpinner');
   const chipsWrap = $('tagChips');
 
   if (!pendingSave?.nextcloudUrl || !pendingSave?.username || !pendingSave?.appPassword) {
     spinner.style.display = 'none';
-    chipsWrap.innerHTML   = `<span class="tags-empty">${t('saveDialog_noCredentials')}</span>`;
+    setChipsMessage(chipsWrap, 'tags-empty', t('saveDialog_noCredentials'));
     return;
   }
 
@@ -97,12 +114,12 @@ async function loadExistingTags(pendingSave) {
       // Zugangsdaten ungültig — löschen und Re-Login erzwingen, wie auch beim Speichern selbst.
       await browser.storage.local.remove(['credEnc', 'encKeyRaw']);
       await notifyAuthFailed();
-      chipsWrap.innerHTML = `<span class="tags-error">${t('saveDialog_authFailed')}</span>`;
+      setChipsMessage(chipsWrap, 'tags-error', t('saveDialog_authFailed'));
       return;
     }
 
     if (!resp.ok) {
-      chipsWrap.innerHTML = `<span class="tags-error">${t('saveDialog_tagsLoadError', [String(resp.status)])}</span>`;
+      setChipsMessage(chipsWrap, 'tags-error', t('saveDialog_tagsLoadError', [String(resp.status)]));
       return;
     }
 
@@ -112,7 +129,7 @@ async function loadExistingTags(pendingSave) {
     const tags = Array.isArray(data) ? data : (data.tags ?? data.data ?? []);
 
     if (!tags.length) {
-      chipsWrap.innerHTML = `<span class="tags-empty">${t('saveDialog_noTags')}</span>`;
+      setChipsMessage(chipsWrap, 'tags-empty', t('saveDialog_noTags'));
       return;
     }
 
@@ -121,7 +138,7 @@ async function loadExistingTags(pendingSave) {
   } catch (err) {
     spinner.style.display = 'none';
     if (err.name === 'TimeoutError') {
-      chipsWrap.innerHTML = `<span class="tags-error">${t('saveDialog_tagsTimeout')}</span>`;
+      setChipsMessage(chipsWrap, 'tags-error', t('saveDialog_tagsTimeout'));
     } else {
       // Silently hide the section on network errors — don't block the user
       $('tagsSection').style.display = 'none';

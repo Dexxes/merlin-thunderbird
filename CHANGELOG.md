@@ -21,6 +21,11 @@ All notable changes to Merlin for Thunderbird are documented here. Format based 
 ### Changed
 - `messagesRead` permission added (required to read email content for the new mail-save feature)
 
+### Security
+- Explicit `content_security_policy` declared in `manifest.json` instead of relying on the implicit MV3 default
+- Save dialog status/empty messages now built via DOM APIs instead of `innerHTML`
+- Tag input capped at 100 characters per tag / 50 tags
+
 
 ## [1.0.0]
 
