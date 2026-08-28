@@ -4,6 +4,11 @@ All notable changes to Merlin for Thunderbird are documented here. Format based 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning based on
 [SemVer](https://semver.org/).
 
+## [1.1.1]
+
+### Changed
+- Improved translation
+
 ## [1.1.0]
 
 ### Added

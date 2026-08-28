@@ -12,10 +12,10 @@
     "message": "Mail an Merlin senden"
   },
   "contextMenu_savePage": {
-    "message": "Inhalt speichern"
+    "message": "HTML an Merlin senden"
   },
   "contextMenu_savePageWithTags": {
-    "message": "Inhalt mit Tags speichern…"
+    "message": "Seite mit Tags speichern…"
   },
   "contextMenu_sendLink": {
     "message": "Link an Merlin senden"
@@ -69,7 +69,7 @@
     "message": "Merlin: Anmeldung fehlgeschlagen"
   },
   "notification_configureCredentials": {
-    "message": "Bitte zuerst Nextcloud-Zugangsdaten konfigurieren."
+    "message": "Bitte zuerst Zugangsdaten konfigurieren."
   },
   "notification_defaultTitle": {
     "message": "Merlin"
@@ -143,7 +143,7 @@
     "message": "Bitte gib deine Nextcloud-URL ein."
   },
   "options_headerSubtitle": {
-    "message": "Nextcloud-Add-on-Einstellungen"
+    "message": "Add-on-Einstellungen"
   },
   "options_headerSubtitleExtension": {
     "message": "Nextcloud-Erweiterungs-Einstellungen"
@@ -187,7 +187,7 @@
     "message": "Merlin braucht die Berechtigung für den Zugriff auf diesen Server, um fortzufahren."
   },
   "options_pageTitle": {
-    "message": "Merlin — Add-on-Einstellungen"
+    "message": "Merlin"
   },
   "options_pageTitleExtension": {
     "message": "Merlin — Erweiterungs-Einstellungen"
