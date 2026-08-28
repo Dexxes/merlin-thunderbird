@@ -121,9 +121,24 @@ async function clearCredentials() {
 
 let _lfActive = false;  // UI-only guard (background tracks the real state)
 
+function selectedBackendKind() {
+  return document.querySelector('input[name="backendKind"]:checked')?.value || 'nextcloud';
+}
+
+// "Login with Nextcloud" only makes sense for the Nextcloud backend — the
+// standalone server has no Nextcloud account behind it, so it gets a neutral label.
+function loginButtonLabel() {
+  return selectedBackendKind() === 'standalone' ? t('options_loginButtonStandalone') : t('options_loginButton');
+}
+
+function updateLoginButtonLabel() {
+  if (_lfActive) return; // don't clobber the "Cancel login…" label mid-flow
+  $('loginFlowBtn').querySelector('span').textContent = loginButtonLabel();
+}
+
 function _lfReset() {
   _lfActive = false;
-  $('loginFlowBtn').querySelector('span').textContent = t('options_loginButton');
+  $('loginFlowBtn').querySelector('span').textContent = loginButtonLabel();
 }
 
 function cancelLoginFlow() {
@@ -131,10 +146,6 @@ function cancelLoginFlow() {
   _lfReset();
   browser.runtime.sendMessage({ type: 'merlin:cancelLoginPoll' }).catch(() => {});
   showStatus(t('options_loginCancelled'), 'info');
-}
-
-function selectedBackendKind() {
-  return document.querySelector('input[name="backendKind"]:checked')?.value || 'nextcloud';
 }
 
 async function startLoginFlow() {
@@ -280,6 +291,7 @@ async function loadSettings() {
   if (nextcloudUrl) setNextcloudUrlInput(nextcloudUrl);
   const radio = document.querySelector(`input[name="backendKind"][value="${backendKind === 'standalone' ? 'standalone' : 'nextcloud'}"]`);
   if (radio) radio.checked = true;
+  updateLoginButtonLabel();
   const connected = Boolean(nextcloudUrl && username && appPassword);
   updateLogoutButton(connected);
   updateTestButton(connected);
@@ -367,4 +379,8 @@ document.addEventListener('DOMContentLoaded', () => {
   $('loginFlowBtn').addEventListener('click', startLoginFlow);
   $('testBtn').addEventListener('click', testConnection);
   $('logoutBtn').addEventListener('click', logout);
+
+  document.querySelectorAll('input[name="backendKind"]').forEach(radio => {
+    radio.addEventListener('change', updateLoginButtonLabel);
+  });
 });
