@@ -165,6 +165,9 @@
   "options_loginButton": {
     "message": "Login with Nextcloud"
   },
+  "options_loginButtonStandalone": {
+    "message": "Log in"
+  },
   "options_loginCancelled": {
     "message": "Login cancelled."
   },
