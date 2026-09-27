@@ -62,6 +62,14 @@
       }
     }
   },
+  "flyout_unsupportedSite": {
+    "message": "Not supported: $domain$ doesn't provide readable article text.",
+    "placeholders": {
+      "domain": {
+        "content": "$1"
+      }
+    }
+  },
   "notification_authFailedMessage": {
     "message": "Merlin: Login failed – please log in again"
   },
@@ -85,6 +93,14 @@
   },
   "notification_savedTitle": {
     "message": "Merlin: Saved ✓"
+  },
+  "notification_unsupportedSiteMessage": {
+    "message": "Merlin: This site isn't supported ($domain$)",
+    "placeholders": {
+      "domain": {
+        "content": "$1"
+      }
+    }
   },
   "options_cancelLogin": {
     "message": "Cancel login…"
@@ -147,6 +163,9 @@
   },
   "options_headerSubtitleExtension": {
     "message": "Merlin Extension Settings"
+  },
+  "options_httpWarning": {
+    "message": "Warning: this URL uses http:// — your app password will be sent unencrypted. Use https:// if possible."
   },
   "options_loggedInAs": {
     "message": "Logged in as $name$. Settings saved.",
