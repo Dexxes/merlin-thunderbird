@@ -220,6 +220,14 @@
     }
     .status-icon { font-size: 16px; flex-shrink: 0; }
 
+    .source-link {
+      margin-top: 24px;
+      text-align: center;
+      font-size: 12px;
+    }
+    .source-link a { color: #777; text-decoration: none; }
+    .source-link a:hover { color: #0082c9; text-decoration: underline; }
+
     .btn-close-tab {
       margin-left: auto;
       padding: 5px 12px;
@@ -323,6 +331,11 @@
       <span class="status-icon" id="statusIcon"></span>
       <span id="statusText"></span>
     </div>
+
+    <!-- Link zum Git-Repository des Add-ons -->
+    <p class="source-link">
+      <a href="https://github.com/dexxes/merlin-thunderbird" target="_blank" rel="noopener noreferrer" data-i18n="options_sourceCode">Source code / Git repository</a>
+    </p>
 
   </div>
 
