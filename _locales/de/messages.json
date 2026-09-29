@@ -62,6 +62,14 @@
       }
     }
   },
+  "flyout_unsupportedSite": {
+    "message": "Nicht unterstützt: $domain$ liefert keinen lesbaren Artikeltext.",
+    "placeholders": {
+      "domain": {
+        "content": "$1"
+      }
+    }
+  },
   "notification_authFailedMessage": {
     "message": "Merlin: Anmeldung fehlgeschlagen – bitte erneut einloggen"
   },
@@ -85,6 +93,14 @@
   },
   "notification_savedTitle": {
     "message": "Merlin"
+  },
+  "notification_unsupportedSiteMessage": {
+    "message": "Merlin: Diese Seite wird nicht unterstützt ($domain$)",
+    "placeholders": {
+      "domain": {
+        "content": "$1"
+      }
+    }
   },
   "options_cancelLogin": {
     "message": "Anmeldung abbrechen…"
@@ -148,6 +164,9 @@
   "options_headerSubtitleExtension": {
     "message": "Nextcloud-Erweiterungs-Einstellungen"
   },
+  "options_httpWarning": {
+    "message": "Achtung: Diese URL nutzt http:// — dein App-Passwort wird unverschlüsselt übertragen. Nutze wenn möglich https://."
+  },
   "options_loggedInAs": {
     "message": "Angemeldet als $name$. Einstellungen gespeichert.",
     "placeholders": {
@@ -204,8 +223,8 @@
   "options_securityLink": {
     "message": "Einstellungen → Sicherheit → App-Passwörter"
   },
-  "options_sourceCode": {
-    "message": "Quellcode / Git-Repository"
+  "options_sourceCodeLink": {
+    "message": "Quellcode auf GitHub"
   },
   "options_testAuthFailed": {
     "message": "Authentifizierung fehlgeschlagen. Bitte erneut über „Mit Nextcloud anmelden“ einloggen."
