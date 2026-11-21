@@ -10,6 +10,8 @@ Merlin reading list via the context menu, optionally tagging it on the way in.
 ## Features
 
 - **Save link / save page** from the right-click context menu, with or without tags
+- **Save an email** itself as an article from the message list
+- Tag dialog with existing tags as a tree (nested tags) that filters while you type
 - Works against either backend: a Nextcloud instance running the Merlin app, or a
   [`merlin-standalone-server`](https://github.com/Dexxes/merlin-standalone-server)
 - **Nextcloud Login Flow** support — connect without typing an app password by hand
@@ -20,7 +22,7 @@ Merlin reading list via the context menu, optionally tagging it on the way in.
 
 ## Requirements
 
-- Thunderbird 115 or later
+- Thunderbird 128 or later
 - A reachable Merlin backend: either a Nextcloud instance with the [`merlin-nextcloud`](https://github.com/Dexxes/merlin-nextcloud/)
   app installed, or a [`merlin-standalone-server`](https://github.com/Dexxes/merlin-standalone-server) instance
 
@@ -44,11 +46,12 @@ backend only) or test the connection directly.
 |---|---|
 | `manifest.json` | Extension manifest (Manifest V3, `browser.menus` permissions) |
 | `background.js` | Context menu, save flow, Nextcloud Login Flow polling, notifications |
+| `common.js` | Shared helpers: credentials, URL checks, tag API, notifications |
 | `crypto.js` | AES-GCM encryption for stored credentials (shared design with `merlin-chrome`) |
 | `options.html` / `options.js` | Settings UI: backend selection, login, connection test |
 | `save-dialog.html` / `save-dialog.js` | Popup dialog for entering tags before saving |
 | `i18n.js` | Localization helper |
-| `_locales/` | Translated strings (`en`, `de`) |
+| `_locales/` | Translated strings (`en`, `de`), generated from [`merlin-translations`](https://github.com/Dexxes/merlin-translations) (`python3 export.py --platform webext`) — never edit by hand |
 
 ## Notes
 

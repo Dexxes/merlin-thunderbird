@@ -4,58 +4,69 @@
 
 const $ = id => document.getElementById(id);
 
-// i18n-Kürzel: liest lokalisierte Strings aus _locales/<lang>/messages.json
-// (generiert via tools/i18n/export.py). `subs` mappt auf die $1/$2-Platzhalter.
-const t = (key, subs) => browser.i18n.getMessage(key, subs);
+// t, getCredentials, clearCredentials, originPatternFor, sameOrigin,
+// serverBase, basicAuthHeader and isAllowedServerUrl come from common.js.
 
-// ─── Nextcloud URL — HTTPS erzwungen ────────────────────────────────────────
-//
-// Das Eingabefeld zeigt nur noch den Host/Pfad an; "https://" steht als
-// fixes Präfix davor (siehe options.html, .url-prefix) und ist dem Nutzer so
-// sichtbar fest vorgegeben. Falls trotzdem ein Schema mitgetippt oder
-// eingefügt wird (z. B. per Copy-Paste einer vollen URL), wird es hier
-// abgeschnitten statt zu einem doppelten oder http-Schema zu führen.
-function stripProtocol(value) {
-  return (value || '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+// ─── Server URL field ─────────────────────────────────────────────────────────
+
+// An empty URL field starts with this prefix so the user only has to type
+// the host name.
+const URL_PREFIX = 'https://';
+
+// Cleans up what the user typed or pasted into the URL field:
+// - a URL pasted behind the prefilled "https://" ("https://https://…") keeps
+//   only the pasted scheme,
+// - the bare prefix counts as empty,
+// - a host name without a scheme gets "https://" in front.
+function normalizeUrlInput(raw) {
+  let v = raw.trim().replace(/^https?:\/\/(?=[a-z][a-z0-9+.-]*:\/\/)/i, '');
+  if (/^https?:\/\/$/i.test(v)) return '';
+  if (v && !/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) v = URL_PREFIX + v;
+  return v;
 }
 
-function getFullNextcloudUrl() {
-  const cleaned = stripProtocol($('nextcloudUrl').value);
-  return cleaned ? `https://${cleaned}` : '';
+// The URL as typed, normalized, trimmed and without a trailing slash.
+function readServerUrl() {
+  return serverBase(normalizeUrlInput($('nextcloudUrl').value));
 }
 
-function setNextcloudUrlInput(fullUrl) {
-  $('nextcloudUrl').value = stripProtocol(fullUrl);
+// Puts the "https://" prefix into an empty URL field.
+function prefillUrlField(url) {
+  $('nextcloudUrl').value = url || URL_PREFIX;
 }
 
-// ─── Runtime host permission for the user's Nextcloud server ─────────────────
-//
-// host_permissions ist nur noch optional (manifest.json) statt pauschal
-// <all_urls>. Grund: ohne aktiv erteilte (statt nur deklarierte) Origin-
-// Permission greift Thunderbirds Netzwerk-Stack die CORS-Prüfung für fetch()
-// auch aus privilegierten Erweiterungsseiten (z. B. der Options-Seite) —
-// "Access-Control-Allow-Origin fehlt" trotz Status 200. chrome.permissions
-// .request (hier browser.permissions.request) schaltet das für die konkret
-// angefragte Origin frei; das funktioniert hier, weil der Request innerhalb
-// eines Button-Klicks (User-Geste) ausgelöst wird. Mirrors merlin-chrome.
-function originPatternFor(url) {
-  try {
-    const u = new URL(url);
-    return `${u.protocol}//${u.host}/*`;
-  } catch {
-    return null;
+// A pasted full URL replaces the prefilled prefix instead of being appended.
+function onUrlInput(e) {
+  const field = e.target;
+  const fixed = field.value.replace(/^https?:\/\/(?=[a-z][a-z0-9+.-]*:\/\/)/i, '');
+  if (fixed !== field.value) field.value = fixed;
+}
+
+// Focusing the field with only the prefix puts the cursor behind it.
+function onUrlFocus(e) {
+  const field = e.target;
+  if (field.value === URL_PREFIX) {
+    requestAnimationFrame(() => field.setSelectionRange(URL_PREFIX.length, URL_PREFIX.length));
   }
 }
+
+// ─── Runtime host permission for the user's server ───────────────────────────
+//
+// host_permissions are only optional (manifest.json) instead of a standing
+// <all_urls> grant. Without an actively granted origin permission,
+// Thunderbird applies CORS checks to fetch() even from privileged add-on
+// pages ("Access-Control-Allow-Origin missing" despite status 200).
+// permissions.request() unlocks exactly the configured origin; this works
+// here because the request is made from within a button click (user gesture).
 
 async function ensureHostPermission(url) {
   const origin = originPatternFor(url);
   if (!origin) return false;
-  // Kein vorgeschalteter `await permissions.contains(...)`: Thunderbird/Firefox
-  // verlangt, dass permissions.request() direkt aus der Klick-Handler-Kette
-  // aufgerufen wird — ein Await davor lässt die User-Geste "verfallen"
-  // ("permissions.request may only be called from a user input handler").
-  // request() selbst löst ohne Prompt sofort auf, falls die Permission schon
-  // erteilt ist, daher ist der separate contains()-Check unnötig.
+  // No permissions.contains() pre-check: request() resolves immediately
+  // without a prompt when the permission is already granted. An await before
+  // it would break the click's user gesture — Thunderbird requires an
+  // uninterrupted gesture for permissions.request(), otherwise it throws
+  // "permissions.request may only be called from a user input handler".
   return browser.permissions.request({ origins: [origin] });
 }
 
@@ -88,26 +99,6 @@ function showStatus(message, type /* 'success' | 'error' | 'info' */, durationMs
   }
 }
 
-// ─── Storage helpers ───────────────────────────────────────────────────────────
-//
-// Credentials liegen ausschließlich verschlüsselt in storage.local (AES-GCM,
-// siehe crypto.js, Key `credEnc`). Kein Sync, keine Passphrase — siehe
-// Kommentar in background.js für den Hintergrund (SECURITY-AUDIT.md).
-
-async function getCredentials() {
-  const { credEnc } = await browser.storage.local.get('credEnc');
-  if (!credEnc) return {};
-  try {
-    return await merlinDecryptCredentials(credEnc);
-  } catch {
-    return {};
-  }
-}
-
-async function clearCredentials() {
-  await browser.storage.local.remove(['credEnc', 'encKeyRaw']);
-}
-
 // ─── Nextcloud Login Flow v2 ──────────────────────────────────────────────────
 //
 // The options page handles:
@@ -128,17 +119,32 @@ function selectedBackendKind() {
 // "Login with Nextcloud" only makes sense for the Nextcloud backend — the
 // standalone server has no Nextcloud account behind it, so it gets a neutral label.
 function loginButtonLabel() {
-  return selectedBackendKind() === 'standalone' ? t('options_loginButtonStandalone') : t('options_loginButton');
+  return backendText('options_loginButton', 'options_loginButtonStandalone');
+}
+
+// Several hints name the "Login with Nextcloud" button; the standalone
+// backend has its own wording with the neutral "Log in" button.
+function backendText(nextcloudKey, standaloneKey) {
+  return t(selectedBackendKind() === 'standalone' ? standaloneKey : nextcloudKey);
+}
+
+function setLoginButtonText(text) {
+  $('loginFlowBtn').querySelector('span').textContent = text;
 }
 
 function updateLoginButtonLabel() {
   if (_lfActive) return; // don't clobber the "Cancel login…" label mid-flow
-  $('loginFlowBtn').querySelector('span').textContent = loginButtonLabel();
+  setLoginButtonText(loginButtonLabel());
+}
+
+// Marks a login flow as running (button becomes "Cancel login…") or as idle.
+function setLoginFlowActive(active) {
+  _lfActive = active;
+  setLoginButtonText(active ? t('options_cancelLogin') : loginButtonLabel());
 }
 
 function _lfReset() {
-  _lfActive = false;
-  $('loginFlowBtn').querySelector('span').textContent = loginButtonLabel();
+  setLoginFlowActive(false);
 }
 
 function cancelLoginFlow() {
@@ -152,18 +158,25 @@ async function startLoginFlow() {
   // Toggle: clicking the button again cancels an in-progress flow
   if (_lfActive) { cancelLoginFlow(); return; }
 
-  const url = getFullNextcloudUrl();
+  const url = readServerUrl();
   if (!url) {
     showStatus(t('options_enterUrlFirst'), 'error');
     $('nextcloudUrl').focus();
     return;
   }
 
+  // Plain http:// only for localhost (local development). The check is
+  // synchronous, so it does not break the user gesture.
+  if (!isAllowedServerUrl(url)) {
+    showStatus(t('options_httpBlocked'), 'error');
+    $('nextcloudUrl').focus();
+    return;
+  }
+
   const backendKind = selectedBackendKind();
 
-  _lfActive = true;
-  $('loginFlowBtn').querySelector('span').textContent = t('options_cancelLogin');
-  showStatus(t('options_connecting'), 'info', 0);
+  setLoginFlowActive(true);
+  showStatus(backendText('options_connecting', 'options_connectingShort'), 'info', 0);
 
   // ── Step 0: request access to this specific server only ────────────────────
   if (!(await ensureHostPermission(url))) {
@@ -173,9 +186,9 @@ async function startLoginFlow() {
   }
 
   // ── Step 1: initiate ────────────────────────────────────────────────────────
-  // merlin-server bildet Nextclouds Login-Flow-v2-JSON identisch nach (siehe
-  // merlin-server/src/Controller/LoginFlowController.php) - nur die Start-URL
-  // unterscheidet sich, Polling/Parsing bleibt unverändert.
+  // merlin-server mirrors Nextcloud's Login Flow v2 JSON exactly (see
+  // merlin-server/src/Controller/LoginFlowController.php) — only the start
+  // URL differs, polling and parsing stay the same.
   let loginUrl, pollToken, pollEndpoint;
   try {
     const loginFlowPath = backendKind === 'standalone' ? '/login/v2' : '/index.php/login/v2';
@@ -185,15 +198,26 @@ async function startLoginFlow() {
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
-    loginUrl     = d.login;
-    pollToken    = d.poll.token;
-    pollEndpoint = d.poll.endpoint;
+    loginUrl     = d?.login;
+    pollToken    = d?.poll?.token;
+    pollEndpoint = d?.poll?.endpoint;
   } catch (e) {
     _lfReset();
     showStatus(t('options_cannotReach', [e.message]), 'error');
     return;
   }
   if (!_lfActive) return;
+
+  // Validate the response: the login page must be encrypted (or localhost),
+  // and the poll token may only go back to the server the user entered —
+  // the poll response carries the new app password.
+  if (typeof pollToken !== 'string' || !pollToken
+      || !isAllowedServerUrl(loginUrl)
+      || !isAllowedServerUrl(pollEndpoint) || !sameOrigin(pollEndpoint, url)) {
+    _lfReset();
+    showStatus(t('options_loginInvalidResponse'), 'error');
+    return;
+  }
 
   // ── Step 2: open login tab ───────────────────────────────────────────────────
   let loginTabId = null;
@@ -246,7 +270,7 @@ browser.storage.onChanged.addListener((changes, area) => {
   }
 
   if (result.success) {
-    setNextcloudUrlInput(result.serverUrl);
+    prefillUrlField(result.serverUrl);
     showStatus(t('options_loggedInAs', [result.loginName]), 'success', 0);
     showCloseButton();
     updateLogoutButton(true);
@@ -256,9 +280,8 @@ browser.storage.onChanged.addListener((changes, area) => {
 
 // ─── Logout ────────────────────────────────────────────────────────────────────
 //
-// Entfernt die gespeicherten Zugangsdaten und setzt die UI in den
-// "nicht verbunden"-Zustand zurück. Es gibt keine manuellen Login-Felder in
-// Thunderbird — die URL bleibt im Feld stehen, nur die Credentials werden gelöscht.
+// Removes the stored credentials and resets the UI to "not connected". The
+// URL stays in the field; only the credentials are deleted.
 
 function updateLogoutButton(connected) {
   const btn = $('logoutBtn');
@@ -267,9 +290,9 @@ function updateLogoutButton(connected) {
   btn.style.display = connected ? 'inline-flex' : 'none';
 }
 
-// "Test connection" ergibt ohne gespeicherte Credentials keinen Sinn (der Klick
-// würde sofort mit "Please log in with Nextcloud first." fehlschlagen) — daher
-// bleibt der Button gesperrt, bis ein Login-Versuch erfolgreich war.
+// "Test connection" makes no sense without stored credentials (the click
+// would fail right away with "Please log in first."), so the button stays
+// disabled until a login succeeded.
 function updateTestButton(connected) {
   const btn = $('testBtn');
   if (!btn) return;
@@ -288,7 +311,7 @@ async function logout() {
 async function loadSettings() {
   const { nextcloudUrl, username, appPassword, backendKind } = await getCredentials();
 
-  if (nextcloudUrl) setNextcloudUrlInput(nextcloudUrl);
+  prefillUrlField(nextcloudUrl);
   const radio = document.querySelector(`input[name="backendKind"][value="${backendKind === 'standalone' ? 'standalone' : 'nextcloud'}"]`);
   if (radio) radio.checked = true;
   updateLoginButtonLabel();
@@ -298,23 +321,34 @@ async function loadSettings() {
 
   // Restore in-progress UI state if the background is still polling
   const { _merlinLoginFlow } = await browser.storage.local.get('_merlinLoginFlow');
-  if (_merlinLoginFlow?.active) {
-    _lfActive = true;
-    $('loginFlowBtn').querySelector('span').textContent = t('options_cancelLogin');
+  // An expired flow (e.g. because Thunderbird unloaded the background page)
+  // no longer counts as active; the background script cleans it up on its
+  // next alarm.
+  if (_merlinLoginFlow?.active && Date.now() <= (_merlinLoginFlow.deadline ?? 0)) {
+    setLoginFlowActive(true);
     showStatus(t('options_completeLogin'), 'info', 0);
     return;
   }
 
   // Show welcome hint when no URL is stored yet
   if (!nextcloudUrl) {
-    showStatus(t('options_welcome'), 'info', 0);
+    showStatus(backendText('options_welcome', 'options_welcomeStandalone'), 'info', 0);
+  }
+}
+
+// Keeps a visible welcome hint in line with the selected backend, since it
+// names that backend's login button.
+function refreshWelcomeText() {
+  const current = $('statusText').textContent;
+  if (current === t('options_welcome') || current === t('options_welcomeStandalone')) {
+    $('statusText').textContent = backendText('options_welcome', 'options_welcomeStandalone');
   }
 }
 
 // ─── Test connection ──────────────────────────────────────────────────────────
 
 async function testConnection() {
-  const url = getFullNextcloudUrl();
+  const url = readServerUrl();
 
   // Read stored credentials — they come from the login flow, not manual fields
   const { username, appPassword, backendKind } = await getCredentials();
@@ -324,26 +358,31 @@ async function testConnection() {
     return;
   }
 
+  if (!isAllowedServerUrl(url)) {
+    showStatus(t('options_httpBlocked'), 'error');
+    return;
+  }
+
   const btn = $('testBtn');
   btn.disabled = true;
   btn.querySelector('span').textContent = t('options_testing');
   showStatus(t('options_connectingShort'), 'info', 0);
 
   try {
-    // merlin-server hat keine Pocket-kompatible /api/v1/get - stattdessen
-    // ein leichter, bereits authentifizierter GET-Call (gleiche Vereinfachung
-    // wie iOS' MerlinAPI.testConnection()/Androids SettingsViewModel.testConnection()).
-    const creds = btoa(`${username}:${appPassword}`);
+    // merlin-server has no Pocket-style /api/v1/get — a light authenticated
+    // GET is used instead (same simplification as iOS'
+    // MerlinAPI.testConnection() and Android's SettingsViewModel.testConnection()).
+    const authHeader = basicAuthHeader(username, appPassword);
     const resp = backendKind === 'standalone'
       ? await fetch(`${url}/api/articles/counts`, {
           method:  'GET',
-          headers: { 'Authorization': `Basic ${creds}` },
+          headers: { 'Authorization': authHeader },
           signal:  AbortSignal.timeout(10_000),
         })
       : await fetch(`${url}/index.php/apps/merlin/api/v1/get`, {
           method:  'POST',
           headers: {
-            'Authorization': `Basic ${creds}`,
+            'Authorization': authHeader,
             'Content-Type':  'application/json',
           },
           body:   JSON.stringify({ state: 'all', count: 1 }),
@@ -379,8 +418,13 @@ document.addEventListener('DOMContentLoaded', () => {
   $('loginFlowBtn').addEventListener('click', startLoginFlow);
   $('testBtn').addEventListener('click', testConnection);
   $('logoutBtn').addEventListener('click', logout);
+  $('nextcloudUrl').addEventListener('input', onUrlInput);
+  $('nextcloudUrl').addEventListener('focus', onUrlFocus);
 
   document.querySelectorAll('input[name="backendKind"]').forEach(radio => {
-    radio.addEventListener('change', updateLoginButtonLabel);
+    radio.addEventListener('change', () => {
+      updateLoginButtonLabel();
+      refreshWelcomeText();
+    });
   });
 });

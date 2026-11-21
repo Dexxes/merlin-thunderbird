@@ -88,45 +88,6 @@
       line-height: 1.5;
     }
 
-    /* URL-Eingabe mit fest sichtbarem https://-Präfix — http ist serverseitig
-       nicht erlaubt, daher kann der Nutzer es gar nicht erst eintippen. */
-    .url-input-group {
-      display: flex;
-      align-items: stretch;
-      border: 1.5px solid #dde1e7;
-      border-radius: 9px;
-      background: #f8f9fa;
-      transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
-      overflow: hidden;
-    }
-    .url-input-group:focus-within {
-      border-color: #0082c9;
-      background: #fff;
-      box-shadow: 0 0 0 3px rgba(0, 130, 201, 0.12);
-    }
-    .url-prefix {
-      display: flex;
-      align-items: center;
-      padding: 10px 0 10px 14px;
-      font-size: 14px;
-      color: #888;
-      background: transparent;
-      user-select: none;
-      white-space: nowrap;
-    }
-    .url-input-group input {
-      flex: 1;
-      width: auto;
-      border: none;
-      border-radius: 0;
-      background: transparent;
-      padding: 10px 14px 10px 4px;
-    }
-    .url-input-group input:focus {
-      box-shadow: none;
-      background: transparent;
-    }
-
     /* Nextcloud Login Flow button */
     .btn-login {
       width: 100%;
@@ -220,14 +181,6 @@
     }
     .status-icon { font-size: 16px; flex-shrink: 0; }
 
-    .source-link {
-      margin-top: 24px;
-      text-align: center;
-      font-size: 12px;
-    }
-    .source-link a { color: #777; text-decoration: none; }
-    .source-link a:hover { color: #0082c9; text-decoration: underline; }
-
     .btn-close-tab {
       margin-left: auto;
       padding: 5px 12px;
@@ -266,6 +219,18 @@
     }
     .backend-toggle input { width: auto; margin: 0; }
     .backend-toggle input:checked + span { color: #0082c9; }
+
+    /* Source code link */
+    .source-link {
+      display: block;
+      text-align: center;
+      margin-top: 22px;
+      font-size: 12px;
+      color: #999;
+      text-decoration: none;
+      transition: color 0.15s;
+    }
+    .source-link:hover { color: #0082c9; }
   </style>
 </head>
 <body>
@@ -284,28 +249,25 @@
     <div class="backend-toggle">
       <label>
         <input type="radio" name="backendKind" id="backendKindNextcloud" value="nextcloud" checked>
-        <span>Nextcloud</span>
+        <span data-i18n="options_backendNextcloud">Nextcloud</span>
       </label>
       <label>
         <input type="radio" name="backendKind" id="backendKindStandalone" value="standalone">
-        <span>Standalone-Server</span>
+        <span data-i18n="options_backendStandalone">Standalone server</span>
       </label>
     </div>
 
-    <!-- Nextcloud URL -->
+    <!-- Server URL -->
     <div class="field">
-      <label for="nextcloudUrl" data-i18n="options_urlLabel">Nextcloud URL</label>
-      <div class="url-input-group">
-        <span class="url-prefix" aria-hidden="true">https://</span>
-        <input
-          type="text"
-          id="nextcloudUrl"
-          placeholder="cloud.example.com"
-          data-i18n-placeholder="options_urlPlaceholder"
-          autocomplete="off"
-          spellcheck="false">
-      </div>
-      <p class="hint" data-i18n="options_urlHint">The base URL of your Nextcloud instance — HTTPS is required and added automatically (no trailing slash needed)</p>
+      <label for="nextcloudUrl" data-i18n="options_urlLabel">URL to your Merlin instance</label>
+      <input
+        type="url"
+        id="nextcloudUrl"
+        placeholder="https://cloud.example.com"
+        data-i18n-placeholder="options_urlPlaceholderFull"
+        autocomplete="off"
+        spellcheck="false">
+      <p class="hint" data-i18n="options_urlHint">The base URL of your Merlin instance - either a Nextcloud or a standalone server</p>
     </div>
 
     <!-- Nextcloud Login Flow -->
@@ -332,14 +294,13 @@
       <span id="statusText"></span>
     </div>
 
-    <!-- Link zum Git-Repository des Add-ons -->
-    <p class="source-link">
-      <a href="https://github.com/dexxes/merlin-thunderbird" target="_blank" rel="noopener noreferrer" data-i18n="options_sourceCodeLink">Source code / Git repository</a>
-    </p>
+    <!-- Source code -->
+    <a class="source-link" href="https://github.com/dexxes/merlin-thunderbird" target="_blank" rel="noopener noreferrer" data-i18n="options_sourceCodeLink">Source code on GitHub</a>
 
   </div>
 
   <script src="crypto.js"></script>
+  <script src="common.js"></script>
   <script src="i18n.js"></script>
   <script src="options.js"></script>
 </body>

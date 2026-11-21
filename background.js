@@ -1,109 +1,126 @@
 'use strict';
 
+// Shared helpers (t, sleep, credentials, URL checks, auth-failure handling,
+// tag API helpers) come from common.js, which manifest.json loads before
+// this file (after crypto.js).
+
 const MENU_ID_SAVE           = 'merlin-save-link';
 const MENU_ID_SAVE_TAGS      = 'merlin-save-with-tags';
 const MENU_ID_SAVE_PAGE      = 'merlin-save-page';
 const MENU_ID_SAVE_PAGE_TAGS = 'merlin-save-page-with-tags';
 const MENU_ID_SAVE_MAIL      = 'merlin-save-mail';
 
-// Thunderbird exposes a `messenger` global; Firefox does not.
-const IS_THUNDERBIRD = typeof messenger !== 'undefined';
+// Upper bound for the page HTML sent along with a page save. Larger pages
+// (e.g. with embedded data: images) are saved by URL only, and the server
+// fetches them itself.
+const MAX_HTML_BYTES = 10 * 1024 * 1024;
 
-// ─── i18n shorthand ───────────────────────────────────────────────────────────
-// Liest lokalisierte Strings aus _locales/<lang>/messages.json (generiert aus
-// localization/strings/*.json via tools/i18n/export.py). `subs` ist optional
-// und wird auf die $1/$2-Platzhalter der jeweiligen Message abgebildet.
-const t = (key, subs) => browser.i18n.getMessage(key, subs);
+// Request timeouts. Saving gets more time because it may upload up to
+// 10 MB of HTML.
+const SAVE_TIMEOUT_MS = 60_000;
+const TAGS_TIMEOUT_MS = 10_000;
 
-// ─── Logo as base64 data URL ──────────────────────────────────────────────────
-// Pages block moz-extension:// URLs via CSP, so we convert the icon once to
-// an inline data URL and pass it as an argument into the injected function.
+const PENDING_SAVE_PREFIX = '_merlinPendingSave_';
+const LOGIN_POLL_ALARM    = 'merlin-login-poll';
 
-let _logoDataUrl = null;
+// Size of the "save with tags" window: tall enough for the tag tree and the
+// buttons below Thunderbird's window title bar.
+const SAVE_DIALOG_SIZE = { width: 460, height: 640 };
 
-async function getLogoDataUrl() {
-  if (_logoDataUrl) return _logoDataUrl;
-  try {
-    const resp = await fetch(browser.runtime.getURL('icons/icon-128.png'));
-    const blob = await resp.blob();
-    _logoDataUrl = await new Promise(resolve => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result);
-      reader.readAsDataURL(blob);
-    });
-  } catch {
-    _logoDataUrl = ''; // no logo on error — flyout still works
-  }
-  return _logoDataUrl;
-}
-
-// ─── Credential storage helpers ───────────────────────────────────────────────
+// ─── Migration: old storage layouts → encrypted storage.local ────────────────
 //
-// Credentials liegen ausschließlich in storage.local, verschlüsselt (AES-GCM,
-// siehe crypto.js) unter dem Key `credEnc`. Es gibt keinen Sync mehr: weder
-// die alte Klartext-Variante noch die alte passphrasen-basierte
-// storage.sync-Kopie werden noch verwendet (siehe SECURITY-AUDIT.md und
-// migrateCredentialsToEncryptedLocal() unten für die Migration von
-// Bestandsdaten).
+// Earlier versions knew two other places for the credentials:
+//   1. Plain-text fields directly in storage.local (nextcloudUrl/username/
+//      appPassword).
+//   2. A passphrase-encrypted copy in storage.sync (credEnc + encPassphrase).
+// Both are replaced by the encrypted storage.local entry (see crypto.js).
+// Existing installs are migrated once; leftovers are removed, including the
+// old single-slot pending save, which held the app password in plain text.
+async function migrateCredentialsToEncryptedLocal() {
+  const { credEnc, nextcloudUrl, username, appPassword } = await browser.storage.local.get([
+    'credEnc', 'nextcloudUrl', 'username', 'appPassword',
+  ]);
 
-async function getCredentials() {
-  const { credEnc } = await browser.storage.local.get('credEnc');
-  if (!credEnc) return {};
-  try {
-    return await merlinDecryptCredentials(credEnc);
-  } catch {
-    // Chiffretext kaputt/Schlüssel weg — wie "keine Credentials" behandeln.
-    return {};
+  if (!credEnc && nextcloudUrl && username && appPassword) {
+    await setCredentials({ nextcloudUrl, username, appPassword });
   }
+
+  await browser.storage.local.remove([
+    'nextcloudUrl', 'username', 'appPassword', 'encPassphrase', '_merlinPendingSave',
+  ]);
+
+  try { await browser.storage.sync.remove(['credEnc', 'encPassphrase']); } catch { /* storage.sync may be unavailable */ }
 }
 
-async function setCredentials(fields) {
-  const current = await getCredentials();
-  const merged  = { ...current, ...fields };
-  const credEnc = await merlinEncryptCredentials(merged);
-  await browser.storage.local.set({ credEnc });
-}
-
-async function clearCredentials() {
-  await browser.storage.local.remove(['credEnc', 'encKeyRaw']);
-}
+browser.runtime.onInstalled.addListener(migrateCredentialsToEncryptedLocal);
+browser.runtime.onStartup.addListener(migrateCredentialsToEncryptedLocal);
 
 // ─── Login Flow polling ───────────────────────────────────────────────────────
 //
-// The polling runs here in the background script, not in the options page.
-// That way it survives the user switching away from the options tab.  Results
-// are written to browser.storage.local so the options page can react via
-// storage.onChanged.
+// Polling runs here rather than on the options page, so it survives the user
+// switching away from the options tab. The result is written to
+// storage.local, where the options page picks it up via storage.onChanged.
+//
+// Under Manifest V3 the background script is a non-persistent event page that
+// Thunderbird may unload at any time. The full flow state therefore lives in
+// storage.local (_merlinLoginFlow), and an alarm wakes the page every 30 s.
+// If no poll is running in memory at that point, it resumes from the stored
+// state; once the deadline has passed, the flow ends with a timeout message
+// instead of hanging silently.
+
+const LOGIN_FLOW_TIMEOUT_MS = 5 * 60 * 1000;
 
 let _lfTimer  = null;
 let _lfActive = false;
 
 async function startBackgroundLoginPoll({ pollEndpoint, pollToken, serverUrl, loginTabId, backendKind }) {
-  // Cancel any stale flow
-  if (_lfActive) {
-    _lfActive = false;
-    clearTimeout(_lfTimer);
-    _lfTimer = null;
+  _lfStopTimer();
+
+  // The poll token (and the response carrying the app password) may only be
+  // exchanged with the server the user entered.
+  if (typeof pollToken !== 'string' || !pollToken
+      || !sameOrigin(pollEndpoint, serverUrl) || !isAllowedServerUrl(pollEndpoint)) {
+    await browser.storage.local.set({ _merlinLoginFlowResult: { error: t('options_loginInvalidResponse') } });
+    return;
   }
 
-  _lfActive = true;
-  await browser.storage.local.set({ _merlinLoginFlow: { active: true, loginTabId } });
+  const flow = {
+    active: true,
+    loginTabId,
+    pollEndpoint,
+    pollToken,
+    serverUrl,
+    backendKind,
+    deadline: Date.now() + LOGIN_FLOW_TIMEOUT_MS,
+  };
+  await browser.storage.local.set({ _merlinLoginFlow: flow });
+  browser.alarms.create(LOGIN_POLL_ALARM, { periodInMinutes: 0.5 });
 
-  const deadline = Date.now() + 5 * 60 * 1000; // 5-minute timeout
+  _lfRun(flow, 2000);
+}
+
+function _lfStopTimer() {
+  _lfActive = false;
+  clearTimeout(_lfTimer);
+  _lfTimer = null;
+}
+
+function _lfRun(flow, delayMs) {
+  _lfActive = true;
 
   async function poll() {
     if (!_lfActive) return;
 
-    if (Date.now() > deadline) {
+    if (Date.now() > flow.deadline) {
       await _lfFinish({ error: t('options_loginTimeout') });
       return;
     }
 
     try {
-      const r = await fetch(pollEndpoint, {
+      const r = await fetch(flow.pollEndpoint, {
         method:  'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body:    `token=${encodeURIComponent(pollToken)}`,
+        body:    `token=${encodeURIComponent(flow.pollToken)}`,
         signal:  AbortSignal.timeout(5_000),
       });
 
@@ -117,53 +134,81 @@ async function startBackgroundLoginPoll({ pollEndpoint, pollToken, serverUrl, lo
       const creds = await r.json();
       if (!_lfActive) return;
 
-      await _lfFinish({ creds, serverUrl, backendKind });
+      await _lfFinish({ creds, serverUrl: flow.serverUrl, backendKind: flow.backendKind });
     } catch {
       // Transient network error — keep retrying
       if (_lfActive) _lfTimer = setTimeout(poll, 2000);
     }
   }
 
-  _lfTimer = setTimeout(poll, 2000);
+  _lfTimer = setTimeout(poll, delayMs);
 }
 
+// Resumes a stored flow after Thunderbird unloaded the event page (alarm) or
+// was restarted (onStartup).
+async function resumeBackgroundLoginPoll() {
+  if (_lfActive) return;
+  const { _merlinLoginFlow: flow } = await browser.storage.local.get('_merlinLoginFlow');
+  if (!flow?.active || !flow.pollEndpoint) {
+    await browser.alarms.clear(LOGIN_POLL_ALARM);
+    return;
+  }
+  if (Date.now() > (flow.deadline ?? 0)) {
+    await _lfFinish({ error: t('options_loginTimeout') });
+    return;
+  }
+  _lfRun(flow, 0);
+}
+
+browser.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === LOGIN_POLL_ALARM) resumeBackgroundLoginPoll();
+});
+browser.runtime.onStartup.addListener(resumeBackgroundLoginPoll);
+
 async function cancelBackgroundLoginPoll() {
-  if (!_lfActive) return;
-  _lfActive = false;
-  clearTimeout(_lfTimer);
-  _lfTimer = null;
+  _lfStopTimer();
+  await browser.alarms.clear(LOGIN_POLL_ALARM);
   await browser.storage.local.remove('_merlinLoginFlow');
   await browser.storage.local.set({ _merlinLoginFlowResult: { cancelled: true } });
 }
 
 async function _lfFinish({ creds, serverUrl, backendKind, error }) {
-  _lfActive = false;
-  clearTimeout(_lfTimer);
-  _lfTimer = null;
+  _lfStopTimer();
+  await browser.alarms.clear(LOGIN_POLL_ALARM);
 
   const { _merlinLoginFlow } = await browser.storage.local.get('_merlinLoginFlow');
   const loginTabId = _merlinLoginFlow?.loginTabId;
   await browser.storage.local.remove('_merlinLoginFlow');
+
+  if (!error) {
+    const valid = creds
+      && typeof creds.loginName === 'string' && creds.loginName
+      && typeof creds.appPassword === 'string' && creds.appPassword;
+    if (!valid) error = t('options_loginInvalidResponse');
+  }
 
   if (error) {
     await browser.storage.local.set({ _merlinLoginFlowResult: { error } });
     return;
   }
 
-  // Save credentials — verschlüsselt in storage.local (siehe Kommentar oben
-  // bei getCredentials/setCredentials).
-  const finalServerUrl = (creds.server || serverUrl).replace(/\/$/, '');
+  // The poll response may only replace the server URL if it is same-origin
+  // with the URL the user entered — otherwise a compromised server could
+  // silently redirect future save traffic (including the newly issued app
+  // password) to another origin.
+  const finalServerUrl = serverBase(sameOrigin(creds.server, serverUrl) ? creds.server : serverUrl);
   await setCredentials({
     nextcloudUrl: finalServerUrl,
     username:     creds.loginName,
     appPassword:  creds.appPassword,
     backendKind,
   });
+  await resetAuthFailures();
 
-  // Close the Nextcloud login tab
+  // Close the login tab
   if (loginTabId != null) browser.tabs.remove(loginTabId).catch(() => {});
 
-  // Notify options page via storage
+  // Notify the options page via storage (in case it is still open)
   await browser.storage.local.set({
     _merlinLoginFlowResult: {
       success:   true,
@@ -172,48 +217,18 @@ async function _lfFinish({ creds, serverUrl, backendKind, error }) {
     },
   });
 
-  // Automatisch zurück zu den Einstellungen: fokussiert die Options-Seite,
-  // falls der Nutzer währenddessen weggeklickt hat, oder öffnet sie neu.
+  // Return to the settings: focuses an open options page or opens a new one.
   browser.runtime.openOptionsPage().catch(() => {});
 }
 
-// ─── Migration: alte Speicherformen → verschlüsseltes storage.local ──────────
-//
-// Frühere Versionen kannten zwei andere Ablagen, die beide abgelöst werden:
-//   1. Klartext-Felder direkt in storage.local (nextcloudUrl/username/
-//      appPassword) — die ursprüngliche "Arbeitskopie".
-//   2. Eine passphrasen-verschlüsselte Kopie in storage.sync (credEnc +
-//      encPassphrase), in der irrtümlichen Annahme, Mozilla verschlüssle
-//      storage.sync für Thunderbird immer serverseitig Ende-zu-Ende — das
-//      stimmt nur mit eingerichtetem Thunderbird Sync (Mozilla-Konto), siehe
-//      SECURITY-AUDIT.md.
-//
-// Es gibt keinen Sync mehr und keine Passphrase mehr. Bestandsnutzer werden
-// einmalig auf die neue, zufallsschlüssel-verschlüsselte storage.local-Ablage
-// migriert; alle alten Klartext-/Sync-Reste werden danach entfernt.
-async function migrateCredentialsToEncryptedLocal() {
-  const { credEnc, nextcloudUrl, username, appPassword } = await browser.storage.local.get([
-    'credEnc', 'nextcloudUrl', 'username', 'appPassword',
-  ]);
-
-  // Fall 1: alte Klartext-Felder in storage.local, noch kein credEnc.
-  if (!credEnc && nextcloudUrl && username && appPassword) {
-    await setCredentials({ nextcloudUrl, username, appPassword });
-  }
-
-  // Alte Klartext-Felder + Passphrase sind in jedem Fall Datenmüll.
-  await browser.storage.local.remove(['nextcloudUrl', 'username', 'appPassword', 'encPassphrase']);
-
-  // Fall 2: alte Sync-Kopie aufräumen — wird nicht mehr genutzt.
-  try { await browser.storage.sync.remove(['credEnc', 'encPassphrase']); } catch { /* storage.sync evtl. nicht verfügbar */ }
-}
-
-browser.runtime.onInstalled.addListener(migrateCredentialsToEncryptedLocal);
-browser.runtime.onStartup.addListener(migrateCredentialsToEncryptedLocal);
-
 // ─── Message handler ──────────────────────────────────────────────────────────
 
-browser.runtime.onMessage.addListener((msg) => {
+browser.runtime.onMessage.addListener((msg, sender) => {
+  // Only accept messages from this add-on's own pages (options page, save
+  // dialog) — keeps a future content script or another add-on from calling
+  // startBackgroundLoginPoll() with its own endpoint/server values.
+  if (sender.id !== browser.runtime.id) return;
+
   if (msg.type === 'merlin:startLoginPoll') {
     startBackgroundLoginPoll(msg);
     return Promise.resolve({ ok: true });
@@ -223,52 +238,95 @@ browser.runtime.onMessage.addListener((msg) => {
     return Promise.resolve({ ok: true });
   }
   if (msg.type === 'merlin:saveWithTags') {
-    handleSaveWithTags(msg.tags ?? [], msg.windowId ?? null);
+    handleSaveWithTags(msg.saveId, msg.tags ?? []);
     return Promise.resolve({ ok: true });
   }
   if (msg.type === 'merlin:cancelSave') {
-    browser.storage.local.remove('_merlinPendingSave').catch(() => {});
+    takePendingSave(msg.saveId).then(p => {
+      if (p?.windowId != null) browser.windows.remove(p.windowId).catch(() => {});
+    });
     return Promise.resolve({ ok: true });
   }
 });
 
-// ─── Save with tags (called from save-dialog) ─────────────────────────────────
+// ─── Pending saves (tag dialog) ───────────────────────────────────────────────
+//
+// Each open tag dialog gets its own entry (its own ID instead of one global
+// slot), so several open dialogs don't overwrite each other. The entry holds
+// no credentials — they are read fresh via getCredentials() when saving, so
+// the app password never sits unencrypted in storage.local. Closing the
+// dialog with the window's close button cleans up the entry via
+// windows.onRemoved; leftovers from the previous session are removed on
+// startup.
 
-async function handleSaveWithTags(tags, windowId) {
-  // Close the dialog window
-  if (windowId != null) browser.windows.remove(windowId).catch(() => {});
+function pendingSaveKey(saveId) {
+  return `${PENDING_SAVE_PREFIX}${saveId}`;
+}
 
-  const { _merlinPendingSave } = await browser.storage.local.get('_merlinPendingSave');
-  await browser.storage.local.remove('_merlinPendingSave');
+async function takePendingSave(saveId) {
+  if (typeof saveId !== 'string' || !saveId) return null;
+  const key = pendingSaveKey(saveId);
+  const { [key]: pending } = await browser.storage.local.get(key);
+  await browser.storage.local.remove(key);
+  return pending ?? null;
+}
 
-  if (!_merlinPendingSave) return;
+async function removePendingSaves(filter) {
+  const all = await browser.storage.local.get(null);
+  const keys = Object.keys(all).filter(k => k.startsWith(PENDING_SAVE_PREFIX) && filter(all[k]));
+  if (keys.length) await browser.storage.local.remove(keys);
+}
 
-  const { url, tabId, nextcloudUrl, username, appPassword, backendKind, isPage } = _merlinPendingSave;
+browser.windows.onRemoved.addListener((windowId) => {
+  removePendingSaves(p => p?.windowId === windowId).catch(() => {});
+});
+browser.runtime.onStartup.addListener(() => {
+  removePendingSaves(() => true).catch(() => {});
+});
 
-  // HTML wird erst jetzt (statt schon beim Öffnen des Dialogs) eingefangen,
-  // um es nicht zwischenzeitlich in storage.local ablegen zu müssen — bei
-  // großen Seiten würde das an dessen Quota stoßen. Der Tab existiert zu
-  // diesem Zeitpunkt noch, da der Save-Dialog nur ein separates Popup-Fenster
-  // ist und den ursprünglichen Tab nicht schließt.
+// ─── Save with tags (called from the save dialog) ─────────────────────────────
+
+async function handleSaveWithTags(saveId, tags) {
+  // Take the entry first, then close the window — otherwise windows.onRemoved
+  // could clean it up before we read it.
+  const pending = await takePendingSave(saveId);
+  if (!pending) return;
+  if (pending.windowId != null) browser.windows.remove(pending.windowId).catch(() => {});
+
+  const { url, tabId, isPage } = pending;
+  const creds = await getCredentials();
+  if (!creds.nextcloudUrl || !creds.username || !creds.appPassword) {
+    await notify('error', t('notification_configureCredentials'));
+    return;
+  }
+
+  // The HTML is only captured now, so it never has to sit in storage.local.
+  // The tab still exists: the save dialog is a separate popup window.
   let html = null;
   if (isPage && tabId != null) html = await captureTabHtml(tabId);
 
-  await saveToMerlin({ nextcloudUrl, username, appPassword, backendKind, url, tabId, tags, html });
+  await saveToMerlin({ ...creds, url, tags, html });
 }
 
-// ─── HTML-Capture für Seiten-Speichern ────────────────────────────────────────
+// ─── HTML capture for page saves ──────────────────────────────────────────────
 //
-// Funktioniert nur in echten Content-Tabs (z. B. ein per "Link in neuem Tab
-// öffnen" geöffneter Link oder ein RSS-Artikel-Tab) — in Mail-Tabs
-// (Nachrichtenansicht/-liste/Compose) ist scripting.executeScript nicht
-// verfügbar und schlägt fehl. Der try/catch degradiert dann sauber auf
-// URL-only-Save, exakt das Muster, das Firefox/Chrome für privilegierte
-// Seiten (about:*, PDF-Viewer) schon nutzen.
+// Only works in real content tabs (e.g. a link opened in a new tab, or an RSS
+// article tab). In mail tabs (message view/list, compose)
+// scripting.executeScript is unavailable and throws; the catch then falls
+// back to a URL-only save.
 async function captureTabHtml(tabId) {
   try {
     const results = await browser.scripting.executeScript({
       target: { tabId },
-      func:   () => document.documentElement.outerHTML,
+      // Runs in the page. Pages over the limit return null and are saved by
+      // URL only. The UTF-16 length is never larger than the UTF-8 byte
+      // size, hence the cheap pre-check.
+      func: (maxBytes) => {
+        const html = document.documentElement.outerHTML;
+        if (html.length > maxBytes) return null;
+        return new Blob([html]).size > maxBytes ? null : html;
+      },
+      args: [MAX_HTML_BYTES],
     });
     return results?.[0]?.result ?? null;
   } catch {
@@ -276,15 +334,15 @@ async function captureTabHtml(tabId) {
   }
 }
 
-// ─── E-Mail als Artikel speichern ──────────────────────────────────────────────
+// ─── Save an email as an article ──────────────────────────────────────────────
 //
-// Nutzt browser.messages.* (messagesRead-Permission) statt scripting.executeScript —
-// funktioniert deshalb, anders als das Seiten-HTML-Capture oben, auch direkt in der
-// Nachrichtenliste/-ansicht. Betreff/Absender werden als title/author mitgeschickt,
-// damit sie den servertigen Extractor überstimmen (siehe ExtensionController::add()
-// in merlin-nextcloud bzw. ArticleController::create() in merlin-server) — bei einer
-// reinen Textmail liefert die Extraktion aus dem gewrappten HTML sonst keinen
-// brauchbaren Titel/Autor.
+// Uses browser.messages.* (messagesRead permission) instead of
+// scripting.executeScript, so unlike the page capture above it also works
+// directly in the message list. Subject and sender are sent as title/author
+// so they override the server-side extractor (see ExtensionController::add()
+// in merlin-nextcloud and ArticleController::create() in merlin-server) — for
+// a plain-text mail the extraction from the wrapped HTML would not find a
+// usable title or author otherwise.
 
 async function buildMailPayload(info) {
   const header = info.selectedMessages?.messages?.[0];
@@ -297,19 +355,18 @@ async function buildMailPayload(info) {
     return null;
   }
 
-  // HTML-Teil bevorzugen (z. B. HTML-Newsletter), sonst Klartext in minimales
-  // HTML wrappen (der eigentliche "reine Textmail"-Fall).
+  // Prefer the HTML part (e.g. HTML newsletters), otherwise wrap the plain
+  // text in minimal HTML.
   const htmlPart  = findPartByType(full, 'text/html');
   const plainPart = htmlPart ? null : findPartByType(full, 'text/plain');
   const html = htmlPart
     ? htmlPart.body
     : wrapPlainTextAsHtml(header.subject, plainPart?.body ?? '');
 
-  // Message-ID-Header für eine stabile, pro Nachricht eindeutige Pseudo-URL
-  // (E-Mails haben keine echte URL, das Feld ist aber Pflicht). Fallback auf
-  // Thunderbirds interne numerische ID, falls der Header fehlt (selten, z. B.
-  // bei kaputt erzeugten Mails).
-  const rawMessageId  = full.headers?.['message-id']?.[0] ?? String(header.id);
+  // The Message-ID header gives a stable pseudo URL that is unique per
+  // message (emails have no real URL, but the field is required). Falls back
+  // to Thunderbird's internal numeric ID if the header is missing.
+  const rawMessageId   = full.headers?.['message-id']?.[0] ?? String(header.id);
   const cleanMessageId = rawMessageId.replace(/^<|>$/g, '');
   const url = `mail://message/${encodeURIComponent(cleanMessageId)}`;
 
@@ -321,9 +378,9 @@ async function buildMailPayload(info) {
   };
 }
 
-// Tiefensuche über die MIME-Baumstruktur von messages.getFull() nach dem ersten
-// Part mit passendem Content-Type (case-insensitive, Prefix-Match wegen
-// Parametern wie "; charset=...").
+// Depth-first search through the MIME tree of messages.getFull() for the
+// first part with a matching content type (case-insensitive prefix match
+// because of parameters like "; charset=...").
 function findPartByType(part, contentType) {
   if (!part) return null;
   if (part.contentType?.toLowerCase().startsWith(contentType) && part.body) return part;
@@ -345,15 +402,13 @@ function wrapPlainTextAsHtml(subject, text) {
     .map(block => `<p>${block.replace(/\n/g, '<br>')}</p>`)
     .join('\n');
 
-  // <title> ist ein Fallback, falls der title-Override aus irgendeinem Grund
-  // nicht greift — im Normalfall überschreibt der Server ihn ohnehin mit dem
-  // separat mitgeschickten Betreff.
+  // <title> is only a fallback — normally the server overrides it with the
+  // subject sent separately.
   return `<html><head><title>${escape(subject || '')}</title></head><body>${paragraphs}</body></html>`;
 }
 
-// Thunderbirds header.author kommt als "Name <email@adresse>" (oder nur die
-// blanke Adresse ohne Namen) — die spitzen Klammern für einen saubereren
-// Autoren-String entfernen, aber nur wenn davor noch ein Name übrig bleibt.
+// header.author is "Name <email@address>" (or just the bare address). Strip
+// the angle brackets for a cleaner author string, but only if a name is left.
 function formatMailAuthor(author) {
   if (!author) return null;
   const stripped = author.replace(/\s*<[^>]*>\s*$/, '').trim();
@@ -364,39 +419,33 @@ function formatMailAuthor(author) {
 //
 // Thunderbird's primary API is browser.menus; browser.contextMenus is only a
 // partial alias there and does NOT fire reliably in the message display pane.
-// Firefox supports both names. We prefer browser.menus when available.
-
-const menus = browser.menus ?? browser.contextMenus;
 
 function setupContextMenu() {
-  menus.removeAll().then(() => {
-    menus.create({
+  browser.menus.removeAll().then(() => {
+    browser.menus.create({
       id:       MENU_ID_SAVE,
       title:    t('contextMenu_saveLink'),
       contexts: ['link'],
     });
-    menus.create({
+    browser.menus.create({
       id:       MENU_ID_SAVE_TAGS,
       title:    t('contextMenu_saveLinkWithTags'),
       contexts: ['link'],
     });
-    // Feuert nur in echten Content-Tabs (siehe captureTabHtml-Kommentar) —
-    // in Mail-Tabs erscheint der Eintrag entweder gar nicht oder degradiert
-    // beim Klick sauber auf URL-only-Save.
-    menus.create({
+    // Only useful in real content tabs (see captureTabHtml) — in mail tabs
+    // a click falls back to a URL-only save.
+    browser.menus.create({
       id:       MENU_ID_SAVE_PAGE,
       title:    t('contextMenu_savePage'),
       contexts: ['page', 'selection', 'image'],
     });
-    menus.create({
+    browser.menus.create({
       id:       MENU_ID_SAVE_PAGE_TAGS,
       title:    t('contextMenu_savePageWithTags'),
       contexts: ['page', 'selection', 'image'],
     });
-    // Feuert beim Rechtsklick auf eine Nachricht in der Nachrichtenliste
-    // (Thread Pane) — nutzt browser.messages.*, nicht scripting.executeScript,
-    // funktioniert daher unabhängig von der Mail-Tab-Einschränkung oben.
-    menus.create({
+    // Right-click on a message in the message list (thread pane).
+    browser.menus.create({
       id:       MENU_ID_SAVE_MAIL,
       title:    t('contextMenu_saveMail'),
       contexts: ['message_list'],
@@ -409,17 +458,16 @@ browser.runtime.onStartup.addListener(setupContextMenu);
 
 // ─── Context menu click ───────────────────────────────────────────────────────
 
-menus.onClicked.addListener(async (info, tab) => {
+browser.menus.onClicked.addListener(async (info, tab) => {
   const { menuItemId } = info;
-  const isLink    = menuItemId === MENU_ID_SAVE || menuItemId === MENU_ID_SAVE_TAGS;
-  const isPage    = menuItemId === MENU_ID_SAVE_PAGE || menuItemId === MENU_ID_SAVE_PAGE_TAGS;
-  const isMail    = menuItemId === MENU_ID_SAVE_MAIL;
-  const withTags  = menuItemId === MENU_ID_SAVE_TAGS || menuItemId === MENU_ID_SAVE_PAGE_TAGS;
+  const isLink   = menuItemId === MENU_ID_SAVE || menuItemId === MENU_ID_SAVE_TAGS;
+  const isPage   = menuItemId === MENU_ID_SAVE_PAGE || menuItemId === MENU_ID_SAVE_PAGE_TAGS;
+  const isMail   = menuItemId === MENU_ID_SAVE_MAIL;
+  const withTags = menuItemId === MENU_ID_SAVE_TAGS || menuItemId === MENU_ID_SAVE_PAGE_TAGS;
   if (!isLink && !isPage && !isMail) return;
 
-  // Mail-Save hat keine Tags-Variante — url/html/title/author kommen komplett
-  // aus buildMailPayload(), nicht aus dem Tab (es gibt für message_list auch
-  // keinen sinnvollen Content-Tab).
+  // Mail saves have no tag variant — url/html/title/author all come from
+  // buildMailPayload(), not from the tab.
   let mailPayload = null;
   if (isMail) {
     mailPayload = await buildMailPayload(info);
@@ -430,43 +478,44 @@ menus.onClicked.addListener(async (info, tab) => {
   const tabId = tab?.id;
   if (!url) return;
 
-  const { nextcloudUrl, username, appPassword, backendKind } = await getCredentials();
+  const creds = await getCredentials();
+  const { nextcloudUrl, username, appPassword } = creds;
 
   // No credentials yet → show notification + open settings
   if (!nextcloudUrl || !username || !appPassword) {
-    await fallbackNotify('error', t('notification_configureCredentials'));
+    await notify('error', t('notification_configureCredentials'));
     await sleep(700);
     browser.runtime.openOptionsPage();
     return;
   }
 
-  // host_permissions ist seit dem CORS-Fix nur noch optional und auf die
-  // konkrete Nextcloud-Origin beschränkt (statt <all_urls>) — wird normalerweise
-  // schon beim Login in den Optionen erteilt (dort passiert das synchron-direkt
-  // im Klick-Handler, siehe ensureHostPermission() in options.js). Hier können
-  // wir die Permission NICHT per request() nachfordern: bis hier hin ist schon
-  // ein await (getCredentials) gelaufen, und Thunderbird/Firefox verlangt für
-  // permissions.request() eine ununterbrochene User-Geste direkt aus dem
-  // Event-Handler — sonst "permissions.request may only be called from a user
-  // input handler". Daher nur passiv prüfen (contains, kein await davor nötig)
-  // und bei fehlender Berechtigung auf die Einstellungen verweisen, wo der
-  // saubere Re-Grant passiert.
+  // Older installs may still have an http:// URL stored.
+  if (!isAllowedServerUrl(nextcloudUrl)) {
+    await notify('error', t('flyout_httpBlocked'));
+    browser.runtime.openOptionsPage();
+    return;
+  }
+
+  // The host permission is optional and limited to the configured server's
+  // origin; it is granted on login in the options page. It can NOT be
+  // requested here: an await has already run, and Thunderbird requires an
+  // uninterrupted user gesture for permissions.request(). So only check it
+  // and point the user to the settings if it is missing.
   const origin = originPatternFor(nextcloudUrl);
   if (origin && !(await browser.permissions.contains({ origins: [origin] }))) {
-    await fallbackNotify('error', t('notification_needsPermission'));
+    await notify('error', t('notification_needsPermission'));
     browser.runtime.openOptionsPage();
     return;
   }
 
   // ── Direct save (no dialog) ─────────────────────────────────────────────────
   if (!withTags) {
-    // HTML-Capture funktioniert nur in echten Content-Tabs, siehe
-    // captureTabHtml-Kommentar — schlägt sie fehl, bleibt html null und der
-    // Server macht wie bisher seinen eigenen Fetch. Für Mail-Save kommt html
-    // schon fertig aus buildMailPayload().
+    // For page saves, send the rendered HTML so the server can skip its own
+    // fetch (paywalled and JS-rendered pages). Link saves are fetched by the
+    // server directly; mail saves bring their HTML from buildMailPayload().
     const html = isMail ? mailPayload.html : (isPage ? await captureTabHtml(tabId) : null);
     await saveToMerlin({
-      nextcloudUrl, username, appPassword, backendKind, url, tabId, tags: [], html,
+      ...creds, url, tags: [], html,
       title:  isMail ? mailPayload.title : null,
       author: isMail ? mailPayload.author : null,
     });
@@ -474,313 +523,218 @@ menus.onClicked.addListener(async (info, tab) => {
   }
 
   // ── Save with tags — open dialog ────────────────────────────────────────────
-  await browser.storage.local.set({
-    _merlinPendingSave: { url, tabId, nextcloudUrl, username, appPassword, backendKind, isPage },
-  });
+  const saveId = crypto.randomUUID();
+  const key    = pendingSaveKey(saveId);
+  await browser.storage.local.set({ [key]: { url, tabId, isPage, windowId: null } });
 
   try {
-    await browser.windows.create({
-      url:     browser.runtime.getURL('save-dialog.html'),
-      type:    'popup',
-      width:   460,
-      height:  420,
+    const pos = await centeredPosition(SAVE_DIALOG_SIZE, tab?.windowId);
+    const win = await browser.windows.create({
+      url:  browser.runtime.getURL(`save-dialog.html?id=${encodeURIComponent(saveId)}`),
+      type: 'popup',
+      ...SAVE_DIALOG_SIZE,
+      ...pos,
     });
+    // left/top are not always honoured on create; set them again.
+    if (pos && win?.id != null) {
+      await browser.windows.update(win.id, pos).catch(() => {});
+    }
+    // Record the window ID so windows.onRemoved can clean up the entry. If
+    // the dialog has already saved in the meantime, the entry is gone and is
+    // not recreated.
+    const { [key]: pending } = await browser.storage.local.get(key);
+    if (pending) await browser.storage.local.set({ [key]: { ...pending, windowId: win.id } });
   } catch {
     // Fallback: save directly if window creation fails
-    await browser.storage.local.remove('_merlinPendingSave');
+    await browser.storage.local.remove(key);
     const html = isPage ? await captureTabHtml(tabId) : null;
-    await saveToMerlin({ nextcloudUrl, username, appPassword, backendKind, url, tabId, tags: [], html });
+    await saveToMerlin({ ...creds, url, html, tags: [] });
   }
 });
 
+// ─── Dialog position ──────────────────────────────────────────────────────────
+
+// Centers a window of `size` on the screen the Thunderbird window is on. The
+// background page's `screen` describes the screen Thunderbird runs on; if the
+// Thunderbird window lies on another monitor, center over that window instead
+// (on a maximized window that is the middle of that screen too).
+async function centeredPosition(size, windowId) {
+  const center = (area) => ({
+    left: Math.round(area.left + Math.max(0, (area.width  - size.width)  / 2)),
+    top:  Math.round(area.top  + Math.max(0, (area.height - size.height) / 2)),
+  });
+
+  let mainWin = null;
+  try {
+    mainWin = windowId != null
+      ? await browser.windows.get(windowId)
+      : await browser.windows.getLastFocused();
+  } catch { /* ignore */ }
+
+  const scr = globalThis.screen;
+  const screenArea = scr && scr.availWidth > 0 ? {
+    left:   scr.availLeft ?? 0,
+    top:    scr.availTop  ?? 0,
+    width:  scr.availWidth,
+    height: scr.availHeight,
+  } : null;
+
+  if (mainWin?.width > 0 && mainWin?.height > 0) {
+    const cx = mainWin.left + mainWin.width  / 2;
+    const cy = mainWin.top  + mainWin.height / 2;
+    const onScreen = screenArea
+      && cx >= screenArea.left && cx < screenArea.left + screenArea.width
+      && cy >= screenArea.top  && cy < screenArea.top  + screenArea.height;
+    if (!onScreen) return center(mainWin);
+  }
+  return screenArea ? center(screenArea) : null;
+}
+
 // ─── API call ─────────────────────────────────────────────────────────────────
 
-// merlin-server hat keine Pocket-kompatible Extension-API (/api/v1/add), die
-// Tag-Namen serverseitig auflöst - Tag-IDs müssen hier vorab per /api/tags
-// aufgelöst (bzw. bei Bedarf neu angelegt) werden.
-async function resolveTagIdsStandalone(nextcloudUrl, creds, tagNames) {
-  if (!tagNames || tagNames.length === 0) return [];
+// merlin-server has no Pocket-style extension API (/api/v1/add) that resolves
+// tag names on the server, so tag IDs are resolved (or created) here via
+// /api/tags first. Also returns the names that could not be applied, so the
+// notification can report them honestly.
+async function resolveTagIdsStandalone(nextcloudUrl, authHeader, tagNames) {
+  if (!tagNames || tagNames.length === 0) return { ids: [], failed: [] };
 
-  const base = nextcloudUrl.replace(/\/$/, '');
-  const headers = { 'Authorization': `Basic ${creds}`, 'Content-Type': 'application/json' };
+  const endpoint = tagsEndpoint(nextcloudUrl, 'standalone');
+  const headers  = { 'Authorization': authHeader, 'Content-Type': 'application/json' };
 
-  let existing = [];
+  // Without the existing tag list every tag would be created again as a
+  // duplicate — rather apply none and report that.
+  let existing;
   try {
-    const resp = await fetch(`${base}/api/tags`, { method: 'GET', headers });
-    if (resp.ok) existing = await resp.json();
-  } catch { /* fällt unten auf "alle neu anlegen" zurück */ }
+    const resp = await fetch(endpoint, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(TAGS_TIMEOUT_MS),
+    });
+    if (!resp.ok) return { ids: [], failed: [...tagNames] };
+    existing = normalizeTagList(await resp.json());
+  } catch {
+    return { ids: [], failed: [...tagNames] };
+  }
 
   const ids = [];
+  const failed = [];
   for (const name of tagNames) {
-    const match = existing.find(t => t.name.toLowerCase() === name.toLowerCase());
+    const match = existing.find(tag => String(tag.name).toLowerCase() === name.toLowerCase());
     if (match) {
       ids.push(match.id);
       continue;
     }
     try {
-      const resp = await fetch(`${base}/api/tags`, {
+      const resp = await fetch(endpoint, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ name }),
+        body:   JSON.stringify({ name }),
+        signal: AbortSignal.timeout(TAGS_TIMEOUT_MS),
       });
-      if (resp.ok) {
-        const created = await resp.json();
-        ids.push(created.id);
-        existing.push(created);
-      }
-    } catch { /* einzelnes Tag konnte nicht angelegt werden - überspringen */ }
+      if (!resp.ok) { failed.push(name); continue; }
+      const created = await resp.json();
+      ids.push(created.id);
+      existing.push(created);
+    } catch {
+      failed.push(name);
+    }
   }
-  return ids;
+  return { ids, failed };
 }
 
-async function saveToMerlin({ nextcloudUrl, username, appPassword, backendKind, url, tabId, tags = [], html = null, title = null, author = null }) {
-  const creds = btoa(`${username}:${appPassword}`);
+async function saveToMerlin({ nextcloudUrl, username, appPassword, backendKind, url, tags = [], html = null, title = null, author = null }) {
+  if (!isAllowedServerUrl(nextcloudUrl)) {
+    await notify('error', t('flyout_httpBlocked'));
+    return;
+  }
+
+  const authHeader = basicAuthHeader(username, appPassword);
+  let failedTags = [];
 
   let apiUrl, body;
   if (backendKind === 'standalone') {
-    // merlin-server hat keine Pocket-kompatible Extension-API (/api/v1/add) -
-    // stattdessen wird der native Endpunkt genutzt, den auch die Leseliste
-    // (library.php) zum Hinzufügen nutzt. /api/articles akzeptiert html
-    // genau wie /index.php/apps/merlin/api/v1/add unten (extractFromHtml()-
-    // Pipeline ist ein 1:1-Port aus Nextcloud).
-    apiUrl = `${nextcloudUrl.replace(/\/$/, '')}/api/articles`;
-    const tagIds = await resolveTagIdsStandalone(nextcloudUrl, creds, tags);
+    // merlin-server uses its native /api/articles endpoint, which accepts
+    // html, title and author exactly like the Nextcloud app's /api/v1/add.
+    apiUrl = `${serverBase(nextcloudUrl)}/api/articles`;
+    const { ids: tagIds, failed } = await resolveTagIdsStandalone(nextcloudUrl, authHeader, tags);
+    failedTags = failed;
     body = tagIds.length > 0 ? { url, tagIds } : { url };
-    if (html) body.html = html;
-    if (title) body.title = title;
-    if (author) body.author = author;
   } else {
-    apiUrl = `${nextcloudUrl.replace(/\/$/, '')}/index.php/apps/merlin/api/v1/add`;
+    apiUrl = `${serverBase(nextcloudUrl)}/index.php/apps/merlin/api/v1/add`;
     body = { url };
     if (tags && tags.length > 0) body.tags = tags;
-    if (html) body.html = html;
-    if (title) body.title = title;
-    if (author) body.author = author;
   }
+  if (html) body.html = html;
+  if (title) body.title = title;
+  if (author) body.author = author;
 
   let response;
   try {
     response = await fetch(apiUrl, {
       method:  'POST',
       headers: {
-        'Authorization': `Basic ${creds}`,
+        'Authorization': authHeader,
         'Content-Type':  'application/json',
       },
-      body: JSON.stringify(body),
+      body:   JSON.stringify(body),
+      signal: AbortSignal.timeout(SAVE_TIMEOUT_MS),
     });
   } catch (networkError) {
-    await injectFlyout(tabId, t('flyout_connectionFailed', [networkError.message]), 'error');
+    const message = networkError?.name === 'TimeoutError'
+      ? t('flyout_timeout')
+      : t('flyout_connectionFailed', [networkError.message]);
+    await notify('error', message);
     return;
   }
 
   if (response.status === 401) {
-    // Zugangsdaten sind ungültig geworden (z. B. App-Passwort widerrufen) —
-    // löschen, damit der Nutzer gezwungen ist, sich erneut über den Login Flow zu verbinden.
-    await clearCredentials();
-    await notifyAuthFailed();
-    await injectFlyout(tabId, t('flyout_authFailed'), 'error');
+    // Credentials are only cleared on the second 401 in a row (see
+    // recordAuthFailure in common.js), which then also shows its own
+    // "please log in again" notification.
+    const cleared = await recordAuthFailure();
+    if (!cleared) await notify('error', t('flyout_authFailedRetry'));
     return;
   }
   if (!response.ok) {
-    await injectFlyout(tabId, t('flyout_serverError', [String(response.status)]), 'error');
+    // The Nextcloud backend rejects known unscrapable domains (see
+    // content-filters/$unsupported.xml there) synchronously. merlin-server
+    // may not know this error shape (yet) — then the generic branch applies.
+    let payload = null;
+    try { payload = await response.clone().json(); } catch { /* no JSON body */ }
+    if (payload && payload.error === 'unsupported_site' && payload.domain) {
+      await notify('error', t('flyout_unsupportedSite', [payload.domain]));
+      return;
+    }
+    await notify('error', t('flyout_serverError', [String(response.status)]));
     return;
   }
 
-  // ── Immediately notify the user that the article was added ────────────────
-  // We confirm success as soon as the server returns 2xx — no need to wait
-  // for the full JSON body to be parsed.
-  const message = tags && tags.length > 0
-    ? t('flyout_articleAddedWithTags', [tags.join(', ')])
-    : t('flyout_articleAdded');
-  await injectFlyout(tabId, message, 'success');
+  await resetAuthFailures();
 
-  // Parse response in the background for potential future use (e.g. logging)
-  try { await response.json(); } catch { /* ignore */ }
-}
-
-// ─── Flyout / notification ────────────────────────────────────────────────────
-//
-// In Thunderbird, active tabs are mail tabs (message display, compose, folder
-// list) — browser.scripting.executeScript is not supported there.
-// We therefore skip the scripting path entirely and always use the native
-// desktop-notification API, which works reliably in Thunderbird.
-//
-// In Firefox, we still try to inject an in-page flyout toast and fall back to
-// a notification only when scripting is blocked (privileged pages, PDFs, …).
-
-async function injectFlyout(tabId, message, state) {
-  if (IS_THUNDERBIRD || tabId == null) {
-    await fallbackNotify(state, message);
-    return;
-  }
-
-  const logoUrl = await getLogoDataUrl();
-
-  try {
-    await browser.scripting.executeScript({
-      target: { tabId },
-      func:   renderFlyout,
-      args:   [message, state, logoUrl],
-    });
-  } catch {
-    // Scripting blocked (privileged page, pdf viewer, etc.)
-    await fallbackNotify(state, message);
-  }
-}
-
-// This function runs INSIDE the page context — must be fully self-contained.
-function renderFlyout(message, state, logoUrl) {
-  const ID      = '__merlin_ext_flyout__';
-  const STYLE_ID = '__merlin_ext_styles__';
-
-  // Inject keyframe animation once
-  if (!document.getElementById(STYLE_ID)) {
-    const s = document.createElement('style');
-    s.id = STYLE_ID;
-    s.textContent = `
-      @keyframes __merlin_spin { to { transform: rotate(360deg); } }
-      @keyframes __merlin_in   { from { opacity:0; transform:translateY(10px) } to { opacity:1; transform:translateY(0) } }
-    `;
-    document.head.appendChild(s);
-  }
-
-  let flyout = document.getElementById(ID);
-  if (!flyout) {
-    flyout = document.createElement('div');
-    flyout.id = ID;
-    Object.assign(flyout.style, {
-      position:      'fixed',
-      bottom:        '24px',
-      right:         '24px',
-      zIndex:        '2147483647',
-      display:       'flex',
-      alignItems:    'center',
-      gap:           '11px',
-      background:    '#fff',
-      border:        '1px solid #e0e4ea',
-      borderRadius:  '13px',
-      boxShadow:     '0 6px 24px rgba(0,0,0,0.13)',
-      padding:       '13px 16px',
-      minWidth:      '230px',
-      maxWidth:      '340px',
-      fontFamily:    "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
-      fontSize:      '13px',
-      lineHeight:    '1.4',
-      animation:     '__merlin_in 0.2s ease both',
-      transition:    'opacity 0.25s ease, transform 0.25s ease',
-    });
-    document.body.appendChild(flyout);
-  }
-
-  // Clear auto-hide timer if updating
-  clearTimeout(flyout.__hideTimer);
-
-  // Build flyout content via DOM API (avoids unsafe innerHTML with dynamic values)
-  flyout.replaceChildren();
-
-  // Left column: logo + state badge
-  const logoWrap = document.createElement('div');
-  Object.assign(logoWrap.style, { flexShrink:'0', position:'relative', width:'50px', height:'50px' });
-
-  const img = document.createElement('img');
-  img.src = logoUrl;
-  img.alt = 'Merlin';
-  Object.assign(img.style, { width:'50px', height:'50px', borderRadius:'10px', display:'block' });
-  logoWrap.appendChild(img);
-
-  const badgeWrap = document.createElement('div');
-  Object.assign(badgeWrap.style, {
-    position:'absolute', bottom:'-4px', right:'-4px', background:'#fff',
-    borderRadius:'50%', width:'20px', height:'20px',
-    display:'flex', alignItems:'center', justifyContent:'center',
-    boxShadow:'0 1px 4px rgba(0,0,0,0.18)',
-  });
-
-  const badgeEl = document.createElement('div');
-  if (state === 'success') {
-    badgeEl.textContent = '✓';
-    Object.assign(badgeEl.style, { color:'#256029', fontSize:'12px', fontWeight:'700', lineHeight:'1' });
-  } else if (state === 'error') {
-    badgeEl.textContent = '✕';
-    Object.assign(badgeEl.style, { color:'#9b1c1c', fontSize:'12px', fontWeight:'700', lineHeight:'1' });
+  // Confirm as soon as the server returns 2xx — content extraction runs
+  // asynchronously on the server; no need to wait for it here.
+  let message;
+  if (failedTags.length > 0) {
+    message = t('flyout_articleAddedTagsFailed', [failedTags.join(', ')]);
+  } else if (tags && tags.length > 0) {
+    message = t('flyout_articleAddedWithTags', [tags.join(', ')]);
   } else {
-    Object.assign(badgeEl.style, {
-      width:'12px', height:'12px',
-      border:'2px solid #0082c9', borderTopColor:'transparent',
-      borderRadius:'50%', animation:'__merlin_spin 0.75s linear infinite',
-    });
+    message = t('flyout_articleAdded');
   }
-  badgeWrap.appendChild(badgeEl);
-  logoWrap.appendChild(badgeWrap);
-  flyout.appendChild(logoWrap);
-
-  // Right column: label + message
-  const textCol = document.createElement('div');
-  Object.assign(textCol.style, { flex:'1', minWidth:'0' });
-
-  const label = document.createElement('div');
-  label.textContent = 'Merlin';
-  Object.assign(label.style, {
-    fontWeight:'700', color:'#0082c9', fontSize:'12px',
-    letterSpacing:'.03em', textTransform:'uppercase', marginBottom:'2px',
-  });
-  textCol.appendChild(label);
-
-  const msgEl = document.createElement('div');
-  msgEl.textContent = message;
-  Object.assign(msgEl.style, { color:'#444', overflow:'hidden', textOverflow:'ellipsis' });
-  textCol.appendChild(msgEl);
-
-  flyout.appendChild(textCol);
-
-  // Auto-dismiss after 3.5 s for finished states
-  if (state !== 'loading') {
-    flyout.__hideTimer = setTimeout(() => {
-      flyout.style.opacity   = '0';
-      flyout.style.transform = 'translateY(10px)';
-      setTimeout(() => flyout.remove(), 280);
-    }, 3500);
-  }
+  await notify('success', message);
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Notifications ────────────────────────────────────────────────────────────
+//
+// Thunderbird's active tabs are mostly mail tabs (message view, compose,
+// folder list), where browser.scripting cannot inject an in-page toast. The
+// add-on therefore always reports results as a desktop notification.
 
-function notifyAuthFailed() {
-  return browser.notifications.create({
-    type:    'basic',
-    iconUrl: browser.runtime.getURL('icons/icon-48.png'),
-    title:   t('notification_authFailedTitle'),
-    message: t('notification_authFailedMessage'),
-  });
-}
-
-function fallbackNotify(state, message) {
+function notify(state, message) {
   const titles = {
     success: t('notification_savedTitle'),
     error:   t('notification_errorTitle'),
-    loading: t('notification_loadingTitle'),
   };
-  return browser.notifications.create({
-    type:    'basic',
-    iconUrl: browser.runtime.getURL('icons/icon-48.png'),
-    title:   titles[state] ?? t('notification_defaultTitle'),
-    message,
-  });
-}
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// host_permissions ist nur noch optional (manifest.json) und auf die jeweils
-// konfigurierte Nextcloud-Origin beschränkt — diese Helper-Funktion baut das
-// Match-Pattern dafür. Duplikat von options.js: separate Skript-Kontexte ohne
-// gemeinsames Modul-System, daher keine sinnvolle gemeinsame Datei dafür.
-function originPatternFor(url) {
-  try {
-    const u = new URL(url);
-    return `${u.protocol}//${u.host}/*`;
-  } catch {
-    return null;
-  }
+  return showNotification(titles[state] ?? t('notification_defaultTitle'), message);
 }
