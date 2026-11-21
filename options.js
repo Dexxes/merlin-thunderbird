@@ -392,7 +392,7 @@ async function testConnection() {
     if (resp.ok) {
       showStatus(t('options_testSuccess'), 'success');
     } else if (resp.status === 401) {
-      showStatus(t('options_testAuthFailed'), 'error');
+      showStatus(backendText('options_testAuthFailed', 'options_testAuthFailedStandalone'), 'error');
     } else if (resp.status === 404) {
       showStatus(t('options_testNotFound'), 'error');
     } else {

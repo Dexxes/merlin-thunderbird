@@ -220,7 +220,7 @@
     "message": "Anmeldung abgebrochen."
   },
   "options_loginFirst": {
-    "message": "Bitte zuerst mit Nextcloud anmelden."
+    "message": "Bitte zuerst anmelden."
   },
   "options_loginInvalidResponse": {
     "message": "Der Server hat eine ungültige Login-Antwort geschickt."
@@ -260,6 +260,9 @@
   },
   "options_testAuthFailed": {
     "message": "Authentifizierung fehlgeschlagen. Bitte erneut über „Mit Nextcloud anmelden“ einloggen."
+  },
+  "options_testAuthFailedStandalone": {
+    "message": "Authentifizierung fehlgeschlagen. Bitte erneut über „Anmelden“ einloggen."
   },
   "options_testButton": {
     "message": "Verbindung testen"
@@ -314,7 +317,7 @@
     "message": "URL gespeichert. Nutze „Anmelden“, um dich zu authentifizieren."
   },
   "options_welcome": {
-    "message": "Willkommen! Gib deine Nextcloud-URL ein und klicke auf „Mit Nextcloud anmelden“, um loszulegen."
+    "message": "Willkommen! Gib deine URL ein und klicke auf „Mit Nextcloud anmelden“, um loszulegen."
   },
   "options_welcomeStandalone": {
     "message": "Willkommen! Gib deine Server-URL ein und klicke auf „Anmelden“, um loszulegen."
