@@ -129,7 +129,7 @@ test('direct link save', async () => {
   await env.ev.clicked.fire({ menuItemId: 'merlin-save-link', linkUrl: 'https://ex.org/a' }, { id: 1, type: 'mail' });
   assert.equal(env.fetches.at(-1)[0], 'https://cloud.example.com/index.php/apps/merlin/api/v1/add');
   assert.deepEqual(env.lastBody(), { url: 'https://ex.org/a' });
-  assert.deepEqual(env.lastNote(), [msg('notification_savedTitle'), msg('flyout_articleAdded')]);
+  assert.deepEqual(env.lastNote(), [msg('notification_defaultTitle'), msg('flyout_articleAdded')]);
 });
 
 test('page save sends the HTML and reports unsupported sites', async () => {
@@ -147,7 +147,7 @@ test('only the second 401 in a row clears the credentials', async () => {
   assert.equal(env.lastNote()[1], msg('flyout_authFailedRetry'));
   await click();
   assert.ok(!env.store.credEnc);
-  assert.equal(env.lastNote()[0], msg('notification_authFailedTitle'));
+  assert.deepEqual(env.lastNote(), [msg('notification_defaultTitle'), msg('saveDialog_authFailed')]);
 });
 
 test('http:// server URLs are refused before any request', async () => {
@@ -185,7 +185,7 @@ test('several selected emails are saved as separate articles', async () => {
   await env.ev.clicked.fire({ menuItemId: 'merlin-save-mail', selectedMessages }, { id: 3, type: 'mail' });
   assert.equal(env.fetches.length, 2);
   assert.deepEqual(env.fetches.map(([, o]) => JSON.parse(o.body).title), ['Hello', 'Second']);
-  assert.deepEqual(env.lastNote(), [msg('notification_savedTitle'), msg('flyout_mailsSaved', ['2'])]);
+  assert.deepEqual(env.lastNote(), [msg('notification_defaultTitle'), msg('flyout_mailsSaved', ['2'])]);
 });
 
 test('a failing email in a batch is reported as a partial save', async () => {

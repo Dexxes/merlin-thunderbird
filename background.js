@@ -935,12 +935,10 @@ async function saveToMerlin(article) {
 //
 // Thunderbird's active tabs are mostly mail tabs (message view, compose,
 // folder list), where browser.scripting cannot inject an in-page toast. The
-// add-on therefore always reports results as a desktop notification.
+// add-on therefore always reports results as a desktop notification: "Merlin"
+// as the title, the actual result as the text. Success and error are told
+// apart by the text itself, so the title doesn't repeat it.
 
 function notify(state, message) {
-  const titles = {
-    success: t('notification_savedTitle'),
-    error:   t('notification_errorTitle'),
-  };
-  return showNotification(titles[state] ?? t('notification_defaultTitle'), message);
+  return showNotification(t('notification_defaultTitle'), message);
 }

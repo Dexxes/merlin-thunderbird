@@ -123,7 +123,7 @@ async function recordAuthFailure() {
     return false;
   }
   await clearCredentials();
-  await showNotification(t('notification_authFailedTitle'), t('notification_authFailedMessage'));
+  await showNotification(t('notification_defaultTitle'), t('saveDialog_authFailed'));
   return true;
 }
 
