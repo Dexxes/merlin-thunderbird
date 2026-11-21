@@ -1,5 +1,7 @@
 # Merlin for Thunderbird
 
+[![Merlin – Get the extension](store/get-extension-en.svg)](https://reviewers.addons.thunderbird.net/en-GB/thunderbird/addon/merlin/)
+
 A Thunderbird add-on for saving links and pages to [Merlin](https://github.com/Dexxes/merlin-nextcloud), a
 cross-platform read-it-later app backed by either a Nextcloud instance
 ([`merlin-nextcloud`](https://github.com/Dexxes/merlin-nextcloud/)) or an independent standalone server ([`merlin-standalone-server`](https://github.com/Dexxes/merlin-standalone-server)).
