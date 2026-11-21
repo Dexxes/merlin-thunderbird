@@ -2,6 +2,9 @@
   "actionTitle": {
     "message": "Merlin-Einstellungen"
   },
+  "command_saveMail": {
+    "message": "Angezeigte oder markierte Mail an Merlin senden"
+  },
   "contextMenu_saveLink": {
     "message": "Link speichern"
   },
@@ -10,6 +13,15 @@
   },
   "contextMenu_saveMail": {
     "message": "Mail an Merlin senden"
+  },
+  "contextMenu_saveMailContent": {
+    "message": "Mailinhalt an Merlin senden"
+  },
+  "contextMenu_saveMailContentWithTags": {
+    "message": "Mailinhalt mit Tags speichern…"
+  },
+  "contextMenu_saveMailWithTags": {
+    "message": "Mail mit Tags speichern…"
   },
   "contextMenu_savePage": {
     "message": "Seite in Merlin speichern"
@@ -65,6 +77,50 @@
   "flyout_httpBlocked": {
     "message": "Deine Server-URL nutzt unverschlüsseltes http://. Bitte in den Einstellungen auf https:// umstellen."
   },
+  "flyout_mailReadFailed": {
+    "message": "Die Mail konnte nicht gelesen werden."
+  },
+  "flyout_mailSaved": {
+    "message": "Mail gespeichert"
+  },
+  "flyout_mailSavedTagsFailed": {
+    "message": "Mail gespeichert, aber diese Tags konnten nicht gesetzt werden: $tags$",
+    "placeholders": {
+      "tags": {
+        "content": "$1"
+      }
+    }
+  },
+  "flyout_mailSavedWithTags": {
+    "message": "Mail gespeichert mit [$tags$]",
+    "placeholders": {
+      "tags": {
+        "content": "$1"
+      }
+    }
+  },
+  "flyout_mailsSaved": {
+    "message": "Mails gespeichert: $count$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "flyout_mailsSavedPartial": {
+    "message": "$saved$ von $total$ Mails gespeichert",
+    "placeholders": {
+      "saved": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
+    }
+  },
+  "flyout_noMailSelected": {
+    "message": "Keine Mail ausgewählt."
+  },
   "flyout_saving": {
     "message": "Wird an Merlin geschickt…"
   },
@@ -86,6 +142,28 @@
         "content": "$1"
       }
     }
+  },
+  "flyout_urlSaved": {
+    "message": "URL gespeichert"
+  },
+  "flyout_urlSavedTagsFailed": {
+    "message": "URL gespeichert, aber diese Tags konnten nicht gesetzt werden: $tags$",
+    "placeholders": {
+      "tags": {
+        "content": "$1"
+      }
+    }
+  },
+  "flyout_urlSavedWithTags": {
+    "message": "URL gespeichert mit [$tags$]",
+    "placeholders": {
+      "tags": {
+        "content": "$1"
+      }
+    }
+  },
+  "messageDisplayAction_title": {
+    "message": "Mail an Merlin senden"
   },
   "notification_authFailedMessage": {
     "message": "Merlin: Anmeldung fehlgeschlagen – bitte erneut einloggen"
@@ -295,6 +373,9 @@
   "options_testing": {
     "message": "Teste…"
   },
+  "options_urlChangedLoginAgain": {
+    "message": "Die URL wurde geändert. Bitte erst mit der neuen URL anmelden."
+  },
   "options_urlHint": {
     "message": "Die Basis-URL deiner Merlin-Instanz – entweder eine Nextcloud oder ein Standalone-Server"
   },
@@ -405,6 +486,14 @@
   },
   "saveDialog_existingTags": {
     "message": "Vorhandene Tags"
+  },
+  "saveDialog_mailCount": {
+    "message": "Mails: $count$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
   },
   "saveDialog_noCredentials": {
     "message": "Keine Zugangsdaten verfügbar"

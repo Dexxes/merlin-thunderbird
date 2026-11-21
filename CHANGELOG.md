@@ -4,9 +4,18 @@ All notable changes to Merlin for Thunderbird are documented here. Format based 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning based on
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [1.2.0] - 2026-11-21
 
 ### Added
+- In tabs that show an email, the context menu offers "Send email content to
+  Merlin" (with or without tags) instead of "Save page", which had nothing to
+  save there.
+- Several selected emails are saved at once, each as its own article (at most
+  50), with one summary notification.
+- "Save email with tags…" in the message list.
+- A button in the message header and the shortcut `Alt+Shift+M` save the
+  displayed email (in the 3-pane window: the selected emails).
+- Tests (`npm test`) and a GitHub workflow that runs them on pull requests.
 - Nested tags (merlin-nextcloud): the "save with tags" dialog lists existing
   tags as an indented tree with sub-tags below their parent instead of a row
   of chips. Selecting a sub-tag also selects its parent tags; deselecting a
@@ -24,6 +33,8 @@ All notable changes to Merlin for Thunderbird are documented here. Format based 
 
 ### Changed
 - The add-on is now just called "Merlin".
+- Notifications show just "Merlin" as the title and the result as the text
+  ("Email saved" or "URL saved") instead of repeating it ("Merlin: Saved ✓").
 - Settings: the URL field is a normal field prefilled with `https://` instead
   of a fixed prefix, so a full URL can be pasted. A pasted URL replaces the
   prefix instead of being appended to it, and a host name without a scheme is
@@ -48,6 +59,9 @@ All notable changes to Merlin for Thunderbird are documented here. Format based 
   and 128 px) instead of 32/192 px images.
 
 ### Security
+- "Test connection" only uses the stored server URL and backend. If another
+  URL was typed in, it asks for a new login instead of sending the app
+  password to that URL.
 - The pending tag-dialog entry no longer stores the app password in plain text
   in `storage.local`; the dialog reads the encrypted credentials itself.
 - Login Flow responses are validated: the poll endpoint must be on the entered

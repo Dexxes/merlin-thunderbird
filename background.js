@@ -9,6 +9,20 @@ const MENU_ID_SAVE_TAGS      = 'merlin-save-with-tags';
 const MENU_ID_SAVE_PAGE      = 'merlin-save-page';
 const MENU_ID_SAVE_PAGE_TAGS = 'merlin-save-page-with-tags';
 const MENU_ID_SAVE_MAIL      = 'merlin-save-mail';
+const MENU_ID_SAVE_MAIL_TAGS = 'merlin-save-mail-with-tags';
+const MENU_ID_MAIL_CONTENT      = 'merlin-save-mail-content';
+const MENU_ID_MAIL_CONTENT_TAGS = 'merlin-save-mail-content-with-tags';
+
+const COMMAND_SAVE_MAIL = 'save-mail';
+
+// Tab types that show an email (3-pane mail tab, message tab/window). A
+// right-click into the message body there has the "page" context, but there
+// is no web page to save — those tabs get the "send email content" items.
+const MAIL_VIEW_TAB_TYPES = new Set(['mail', 'messageDisplay']);
+
+// Upper bound for one multi-selection save, so a mistaken "select all" in a
+// big folder doesn't send thousands of emails.
+const MAX_MAILS_PER_SAVE = 50;
 
 // Upper bound for the page HTML sent along with a page save. Larger pages
 // (e.g. with embedded data: images) are saved by URL only, and the server
@@ -293,15 +307,25 @@ async function handleSaveWithTags(saveId, tags) {
   if (!pending) return;
   if (pending.windowId != null) browser.windows.remove(pending.windowId).catch(() => {});
 
-  const { url, tabId, isPage } = pending;
   const creds = await getCredentials();
   if (!creds.nextcloudUrl || !creds.username || !creds.appPassword) {
     await notify('error', t('notification_configureCredentials'));
     return;
   }
 
+  // Emails: the entry only holds message IDs; the content is read now.
+  if (pending.kind === 'mail') {
+    const headers = [];
+    for (const id of pending.messageIds ?? []) {
+      try { headers.push(await browser.messages.get(id)); } catch { /* message gone */ }
+    }
+    await saveMails(creds, headers, tags);
+    return;
+  }
+
   // The HTML is only captured now, so it never has to sit in storage.local.
   // The tab still exists: the save dialog is a separate popup window.
+  const { url, tabId, isPage } = pending;
   let html = null;
   if (isPage && tabId != null) html = await captureTabHtml(tabId);
 
@@ -344,8 +368,7 @@ async function captureTabHtml(tabId) {
 // a plain-text mail the extraction from the wrapped HTML would not find a
 // usable title or author otherwise.
 
-async function buildMailPayload(info) {
-  const header = info.selectedMessages?.messages?.[0];
+async function buildMailPayload(header) {
   if (!header) return null;
 
   let full;
@@ -371,6 +394,7 @@ async function buildMailPayload(info) {
   const url = `mail://message/${encodeURIComponent(cleanMessageId)}`;
 
   return {
+    kind: 'mail',
     url,
     html,
     title:  header.subject || null,
@@ -415,6 +439,56 @@ function formatMailAuthor(author) {
   return stripped || author;
 }
 
+// ─── Which emails a click refers to ───────────────────────────────────────────
+
+// Message lists can be paged (MessageList with an `id` for continueList);
+// older APIs return plain arrays. Collects up to MAX_MAILS_PER_SAVE headers.
+async function collectMessages(list) {
+  if (!list) return [];
+  if (Array.isArray(list)) return list.slice(0, MAX_MAILS_PER_SAVE);
+  const headers = [...(list.messages ?? [])];
+  let listId = list.id;
+  while (listId && headers.length < MAX_MAILS_PER_SAVE) {
+    const next = await browser.messages.continueList(listId);
+    headers.push(...(next.messages ?? []));
+    listId = next.id;
+  }
+  if (listId) {
+    try { await browser.messages.abortList(listId); } catch { /* older Thunderbird */ }
+  }
+  return headers.slice(0, MAX_MAILS_PER_SAVE);
+}
+
+// The email(s) shown in a message pane, message tab or message window.
+async function displayedMessages(tab) {
+  if (tab?.id == null) return [];
+  try {
+    return await collectMessages(await browser.messageDisplay.getDisplayedMessages(tab.id));
+  } catch {
+    return [];
+  }
+}
+
+// The emails selected in the message list of a 3-pane mail tab.
+async function selectedMessages(tab) {
+  if (tab?.id == null) return [];
+  try {
+    return await collectMessages(await browser.mailTabs.getSelectedMessages(tab.id));
+  } catch {
+    return [];
+  }
+}
+
+// For the toolbar button and the keyboard shortcut: in a mail tab the
+// selected emails, in a message tab/window the displayed one.
+async function messagesForTab(tab) {
+  if (tab?.type === 'mail') {
+    const selected = await selectedMessages(tab);
+    if (selected.length) return selected;
+  }
+  return displayedMessages(tab);
+}
+
 // ─── Context menu setup ───────────────────────────────────────────────────────
 //
 // Thunderbird's primary API is browser.menus; browser.contextMenus is only a
@@ -432,8 +506,8 @@ function setupContextMenu() {
       title:    t('contextMenu_saveLinkWithTags'),
       contexts: ['link'],
     });
-    // Only useful in real content tabs (see captureTabHtml) — in mail tabs
-    // a click falls back to a URL-only save.
+    // Page items are for content tabs (opened links, RSS articles). In tabs
+    // that show an email, onShown swaps them for the email-content items.
     browser.menus.create({
       id:       MENU_ID_SAVE_PAGE,
       title:    t('contextMenu_savePage'),
@@ -444,10 +518,27 @@ function setupContextMenu() {
       title:    t('contextMenu_savePageWithTags'),
       contexts: ['page', 'selection', 'image'],
     });
-    // Right-click on a message in the message list (thread pane).
+    browser.menus.create({
+      id:       MENU_ID_MAIL_CONTENT,
+      title:    t('contextMenu_saveMailContent'),
+      contexts: ['page', 'selection', 'image'],
+      visible:  false,
+    });
+    browser.menus.create({
+      id:       MENU_ID_MAIL_CONTENT_TAGS,
+      title:    t('contextMenu_saveMailContentWithTags'),
+      contexts: ['page', 'selection', 'image'],
+      visible:  false,
+    });
+    // Right-click on messages in the message list (thread pane).
     browser.menus.create({
       id:       MENU_ID_SAVE_MAIL,
       title:    t('contextMenu_saveMail'),
+      contexts: ['message_list'],
+    });
+    browser.menus.create({
+      id:       MENU_ID_SAVE_MAIL_TAGS,
+      title:    t('contextMenu_saveMailWithTags'),
       contexts: ['message_list'],
     });
   });
@@ -456,28 +547,28 @@ function setupContextMenu() {
 browser.runtime.onInstalled.addListener(setupContextMenu);
 browser.runtime.onStartup.addListener(setupContextMenu);
 
-// ─── Context menu click ───────────────────────────────────────────────────────
-
-browser.menus.onClicked.addListener(async (info, tab) => {
-  const { menuItemId } = info;
-  const isLink   = menuItemId === MENU_ID_SAVE || menuItemId === MENU_ID_SAVE_TAGS;
-  const isPage   = menuItemId === MENU_ID_SAVE_PAGE || menuItemId === MENU_ID_SAVE_PAGE_TAGS;
-  const isMail   = menuItemId === MENU_ID_SAVE_MAIL;
-  const withTags = menuItemId === MENU_ID_SAVE_TAGS || menuItemId === MENU_ID_SAVE_PAGE_TAGS;
-  if (!isLink && !isPage && !isMail) return;
-
-  // Mail saves have no tag variant — url/html/title/author all come from
-  // buildMailPayload(), not from the tab.
-  let mailPayload = null;
-  if (isMail) {
-    mailPayload = await buildMailPayload(info);
-    if (!mailPayload) return;
+// Shows the page items only in content tabs and the email-content items only
+// where an email is displayed. In the compose window neither makes sense.
+browser.menus.onShown.addListener((info, tab) => {
+  const isPageMenu = ['page', 'selection', 'image'].some(c => info.contexts.includes(c));
+  if (!isPageMenu) return;
+  const inMail    = MAIL_VIEW_TAB_TYPES.has(tab?.type);
+  const inCompose = tab?.type === 'messageCompose';
+  const pageVisible = !inMail && !inCompose;
+  for (const id of [MENU_ID_SAVE_PAGE, MENU_ID_SAVE_PAGE_TAGS]) {
+    browser.menus.update(id, { visible: pageVisible });
   }
+  for (const id of [MENU_ID_MAIL_CONTENT, MENU_ID_MAIL_CONTENT_TAGS]) {
+    browser.menus.update(id, { visible: inMail });
+  }
+  browser.menus.refresh();
+});
 
-  const url   = isMail ? mailPayload.url : (isLink ? info.linkUrl : tab?.url);
-  const tabId = tab?.id;
-  if (!url) return;
+// ─── Common checks before any save ────────────────────────────────────────────
 
+// Returns the credentials when a save can go ahead, otherwise tells the user
+// what is missing (and opens the settings) and returns null.
+async function readyCredentials() {
   const creds = await getCredentials();
   const { nextcloudUrl, username, appPassword } = creds;
 
@@ -486,14 +577,14 @@ browser.menus.onClicked.addListener(async (info, tab) => {
     await notify('error', t('notification_configureCredentials'));
     await sleep(700);
     browser.runtime.openOptionsPage();
-    return;
+    return null;
   }
 
   // Older installs may still have an http:// URL stored.
   if (!isAllowedServerUrl(nextcloudUrl)) {
     await notify('error', t('flyout_httpBlocked'));
     browser.runtime.openOptionsPage();
-    return;
+    return null;
   }
 
   // The host permission is optional and limited to the configured server's
@@ -505,30 +596,145 @@ browser.menus.onClicked.addListener(async (info, tab) => {
   if (origin && !(await browser.permissions.contains({ origins: [origin] }))) {
     await notify('error', t('notification_needsPermission'));
     browser.runtime.openOptionsPage();
+    return null;
+  }
+
+  return creds;
+}
+
+// ─── Context menu click ───────────────────────────────────────────────────────
+
+browser.menus.onClicked.addListener(async (info, tab) => {
+  const { menuItemId } = info;
+  const isLink    = menuItemId === MENU_ID_SAVE || menuItemId === MENU_ID_SAVE_TAGS;
+  const isPage    = menuItemId === MENU_ID_SAVE_PAGE || menuItemId === MENU_ID_SAVE_PAGE_TAGS;
+  const isList    = menuItemId === MENU_ID_SAVE_MAIL || menuItemId === MENU_ID_SAVE_MAIL_TAGS;
+  const isContent = menuItemId === MENU_ID_MAIL_CONTENT || menuItemId === MENU_ID_MAIL_CONTENT_TAGS;
+  const withTags  = [MENU_ID_SAVE_TAGS, MENU_ID_SAVE_PAGE_TAGS, MENU_ID_SAVE_MAIL_TAGS, MENU_ID_MAIL_CONTENT_TAGS]
+    .includes(menuItemId);
+  if (!isLink && !isPage && !isList && !isContent) return;
+
+  // ── Emails ──────────────────────────────────────────────────────────────────
+  if (isList || isContent) {
+    const headers = isList
+      ? await collectMessages(info.selectedMessages)
+      : await displayedMessages(tab);
+    await startMailSave(headers, withTags, tab);
     return;
   }
 
-  // ── Direct save (no dialog) ─────────────────────────────────────────────────
+  // ── Links and pages ─────────────────────────────────────────────────────────
+  const url   = isLink ? info.linkUrl : tab?.url;
+  const tabId = tab?.id;
+  if (!url) return;
+
+  const creds = await readyCredentials();
+  if (!creds) return;
+
   if (!withTags) {
     // For page saves, send the rendered HTML so the server can skip its own
     // fetch (paywalled and JS-rendered pages). Link saves are fetched by the
-    // server directly; mail saves bring their HTML from buildMailPayload().
-    const html = isMail ? mailPayload.html : (isPage ? await captureTabHtml(tabId) : null);
-    await saveToMerlin({
-      ...creds, url, tags: [], html,
-      title:  isMail ? mailPayload.title : null,
-      author: isMail ? mailPayload.author : null,
-    });
+    // server directly.
+    const html = isPage ? await captureTabHtml(tabId) : null;
+    await saveToMerlin({ ...creds, url, tags: [], html });
     return;
   }
 
-  // ── Save with tags — open dialog ────────────────────────────────────────────
+  await openSaveDialog({ url, tabId, isPage }, tab?.windowId, async () => {
+    const html = isPage ? await captureTabHtml(tabId) : null;
+    await saveToMerlin({ ...creds, url, html, tags: [] });
+  });
+});
+
+// ─── Toolbar button in the message header and keyboard shortcut ───────────────
+
+browser.messageDisplayAction.onClicked.addListener(async (tab) => {
+  await startMailSave(await displayedMessages(tab), false, tab);
+});
+
+browser.commands.onCommand.addListener(async (command, tab) => {
+  if (command !== COMMAND_SAVE_MAIL) return;
+  if (!tab) {
+    [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+  }
+  await startMailSave(await messagesForTab(tab), false, tab);
+});
+
+// ─── Saving emails ────────────────────────────────────────────────────────────
+
+async function startMailSave(headers, withTags, tab) {
+  if (!headers.length) {
+    await notify('error', t('flyout_noMailSelected'));
+    return;
+  }
+
+  const creds = await readyCredentials();
+  if (!creds) return;
+
+  if (!withTags) {
+    await saveMails(creds, headers, []);
+    return;
+  }
+
+  // The dialog shows the subject (one email) or the number of emails; the
+  // entry only holds message IDs, the content is read when saving.
+  const label = headers.length === 1
+    ? (headers[0].subject || formatMailAuthor(headers[0].author) || '')
+    : t('saveDialog_mailCount', [String(headers.length)]);
+  const pending = { kind: 'mail', url: label, messageIds: headers.map(h => h.id) };
+  await openSaveDialog(pending, tab?.windowId, () => saveMails(creds, headers, []));
+}
+
+// Saves each email as its own article. One email gets the usual detailed
+// notification; several get one summary at the end. A fatal error (login
+// rejected, server unreachable) stops the batch.
+async function saveMails(creds, headers, tags) {
+  if (!headers.length) {
+    await notify('error', t('flyout_noMailSelected'));
+    return;
+  }
+
+  if (headers.length === 1) {
+    const payload = await buildMailPayload(headers[0]);
+    if (!payload) { await notify('error', t('flyout_mailReadFailed')); return; }
+    await saveToMerlin({ ...creds, ...payload, tags });
+    return;
+  }
+
+  let saved = 0;
+  let lastError = null;
+  for (const header of headers) {
+    const payload = await buildMailPayload(header);
+    if (!payload) { lastError = { message: t('flyout_mailReadFailed') }; continue; }
+    const result = await postArticle({ ...creds, ...payload, tags });
+    if (result.ok) {
+      saved++;
+      continue;
+    }
+    lastError = result;
+    if (result.fatal) break;
+  }
+
+  if (saved === headers.length) {
+    await notify('success', t('flyout_mailsSaved', [String(saved)]));
+  } else if (saved > 0) {
+    await notify('error', t('flyout_mailsSavedPartial', [String(saved), String(headers.length)]));
+  } else if (lastError && !lastError.silent) {
+    await notify('error', lastError.message);
+  }
+}
+
+// ─── Save dialog ──────────────────────────────────────────────────────────────
+
+// Opens the "save with tags" window for `pending` (stored under its own ID).
+// If the window cannot be opened, `fallback` saves without tags.
+async function openSaveDialog(pending, windowId, fallback) {
   const saveId = crypto.randomUUID();
   const key    = pendingSaveKey(saveId);
-  await browser.storage.local.set({ [key]: { url, tabId, isPage, windowId: null } });
+  await browser.storage.local.set({ [key]: { ...pending, windowId: null } });
 
   try {
-    const pos = await centeredPosition(SAVE_DIALOG_SIZE, tab?.windowId);
+    const pos = await centeredPosition(SAVE_DIALOG_SIZE, windowId);
     const win = await browser.windows.create({
       url:  browser.runtime.getURL(`save-dialog.html?id=${encodeURIComponent(saveId)}`),
       type: 'popup',
@@ -542,15 +748,13 @@ browser.menus.onClicked.addListener(async (info, tab) => {
     // Record the window ID so windows.onRemoved can clean up the entry. If
     // the dialog has already saved in the meantime, the entry is gone and is
     // not recreated.
-    const { [key]: pending } = await browser.storage.local.get(key);
-    if (pending) await browser.storage.local.set({ [key]: { ...pending, windowId: win.id } });
+    const { [key]: stored } = await browser.storage.local.get(key);
+    if (stored) await browser.storage.local.set({ [key]: { ...stored, windowId: win.id } });
   } catch {
-    // Fallback: save directly if window creation fails
     await browser.storage.local.remove(key);
-    const html = isPage ? await captureTabHtml(tabId) : null;
-    await saveToMerlin({ ...creds, url, html, tags: [] });
+    await fallback();
   }
-});
+}
 
 // ─── Dialog position ──────────────────────────────────────────────────────────
 
@@ -643,10 +847,14 @@ async function resolveTagIdsStandalone(nextcloudUrl, authHeader, tagNames) {
   return { ids, failed };
 }
 
-async function saveToMerlin({ nextcloudUrl, username, appPassword, backendKind, url, tags = [], html = null, title = null, author = null }) {
+// Sends one article to the server. Returns { ok, message } — `message` is
+// the text to show the user; `fatal` marks errors that will repeat for every
+// further article (stop a batch), `silent` that the user was already told.
+// `kind` only picks the wording of the success message: 'mail' → "Email
+// saved", anything else → "URL saved".
+async function postArticle({ nextcloudUrl, username, appPassword, backendKind, url, tags = [], html = null, title = null, author = null, kind = 'url' }) {
   if (!isAllowedServerUrl(nextcloudUrl)) {
-    await notify('error', t('flyout_httpBlocked'));
-    return;
+    return { ok: false, fatal: true, message: t('flyout_httpBlocked') };
   }
 
   const authHeader = basicAuthHeader(username, appPassword);
@@ -684,8 +892,7 @@ async function saveToMerlin({ nextcloudUrl, username, appPassword, backendKind, 
     const message = networkError?.name === 'TimeoutError'
       ? t('flyout_timeout')
       : t('flyout_connectionFailed', [networkError.message]);
-    await notify('error', message);
-    return;
+    return { ok: false, fatal: true, message };
   }
 
   if (response.status === 401) {
@@ -693,8 +900,7 @@ async function saveToMerlin({ nextcloudUrl, username, appPassword, backendKind, 
     // recordAuthFailure in common.js), which then also shows its own
     // "please log in again" notification.
     const cleared = await recordAuthFailure();
-    if (!cleared) await notify('error', t('flyout_authFailedRetry'));
-    return;
+    return { ok: false, fatal: true, silent: cleared, message: t('flyout_authFailedRetry') };
   }
   if (!response.ok) {
     // The Nextcloud backend rejects known unscrapable domains (see
@@ -703,38 +909,42 @@ async function saveToMerlin({ nextcloudUrl, username, appPassword, backendKind, 
     let payload = null;
     try { payload = await response.clone().json(); } catch { /* no JSON body */ }
     if (payload && payload.error === 'unsupported_site' && payload.domain) {
-      await notify('error', t('flyout_unsupportedSite', [payload.domain]));
-      return;
+      return { ok: false, message: t('flyout_unsupportedSite', [payload.domain]) };
     }
-    await notify('error', t('flyout_serverError', [String(response.status)]));
-    return;
+    return { ok: false, message: t('flyout_serverError', [String(response.status)]) };
   }
 
   await resetAuthFailures();
 
   // Confirm as soon as the server returns 2xx — content extraction runs
   // asynchronously on the server; no need to wait for it here.
-  let message;
+  const isMail = kind === 'mail';
   if (failedTags.length > 0) {
-    message = t('flyout_articleAddedTagsFailed', [failedTags.join(', ')]);
-  } else if (tags && tags.length > 0) {
-    message = t('flyout_articleAddedWithTags', [tags.join(', ')]);
-  } else {
-    message = t('flyout_articleAdded');
+    const key = isMail ? 'flyout_mailSavedTagsFailed' : 'flyout_urlSavedTagsFailed';
+    return { ok: true, message: t(key, [failedTags.join(', ')]) };
   }
-  await notify('success', message);
+  if (tags && tags.length > 0) {
+    const key = isMail ? 'flyout_mailSavedWithTags' : 'flyout_urlSavedWithTags';
+    return { ok: true, message: t(key, [tags.join(', ')]) };
+  }
+  return { ok: true, message: t(isMail ? 'flyout_mailSaved' : 'flyout_urlSaved') };
+}
+
+// Sends one article and reports the result as a notification.
+async function saveToMerlin(article) {
+  const result = await postArticle(article);
+  if (result.silent) return;
+  await notify(result.ok ? 'success' : 'error', result.message);
 }
 
 // ─── Notifications ────────────────────────────────────────────────────────────
 //
 // Thunderbird's active tabs are mostly mail tabs (message view, compose,
 // folder list), where browser.scripting cannot inject an in-page toast. The
-// add-on therefore always reports results as a desktop notification.
+// add-on therefore always reports results as a desktop notification: "Merlin"
+// as the title, the actual result as the text. Success and error are told
+// apart by the text itself, so the title doesn't repeat it.
 
 function notify(state, message) {
-  const titles = {
-    success: t('notification_savedTitle'),
-    error:   t('notification_errorTitle'),
-  };
-  return showNotification(titles[state] ?? t('notification_defaultTitle'), message);
+  return showNotification(t('notification_defaultTitle'), message);
 }

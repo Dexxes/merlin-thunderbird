@@ -1,0 +1,12 @@
+{
+  "name": "merlin-thunderbird",
+  "private": true,
+  "description": "Development tooling for the Merlin Thunderbird add-on (not part of the .xpi)",
+  "license": "AGPL-3.0-or-later",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}

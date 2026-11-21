@@ -2,20 +2,15 @@
 
 // ─── Merlin Credential Encryption ────────────────────────────────────────────
 //
-// Schutzziel: Das Nextcloud-App-Passwort liegt in storage.local nicht im
-// Klartext, sondern als AES-GCM-Chiffretext. Es gibt keine Passphrase-Eingabe
-// durch den Nutzer — der AES-Schlüssel wird zufällig erzeugt und liegt
-// ebenfalls (raw) in storage.local. Das schützt nicht gegen einen Angreifer
-// mit vollem Zugriff auf das Thunderbird-Profilverzeichnis (Schlüssel und
-// Chiffretext liegen dort nebeneinander), verhindert aber, dass das
-// App-Passwort als Klartext-String im Profil auftaucht, z. B. bei
-// versehentlichem Export, Backup-Inspektion oder Sync-Mechanismen.
+// Goal: the app password is not stored in storage.local as plain text but as
+// AES-GCM ciphertext. There is no passphrase — the AES key is generated
+// randomly and also lives (raw) in storage.local. This does NOT protect
+// against an attacker with full access to the Thunderbird profile directory
+// (key and ciphertext sit side by side there); it only keeps the app password
+// from showing up as a readable string in the profile.
 //
-// Es gibt KEINEN Sync mehr: storage.sync wird von dieser Erweiterung nicht
-// mehr verwendet. Credentials bleiben ausschließlich lokal auf dem Gerät
-// (storage.local), unabhängig davon, ob Thunderbird Sync aktiv ist.
-//
-// Identisch zur Implementierung in merlin-chrome/crypto.js.
+// Nothing is synced: credentials stay in storage.local on this device,
+// whether or not Thunderbird Sync is set up.
 
 function _merlinToBase64(buf) {
   return btoa(String.fromCharCode(...new Uint8Array(buf)));
@@ -25,10 +20,9 @@ function _merlinFromBase64(b64) {
   return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
 }
 
-// Der Schlüssel wird beim ersten Gebrauch zufällig erzeugt und danach aus
-// storage.local wiederverwendet — kein PBKDF2 nötig, da er nicht aus einer
-// (potenziell schwachen) Nutzereingabe abgeleitet wird, sondern selbst schon
-// volle 256 Bit Entropie hat.
+// The key is generated randomly on first use and then reused from
+// storage.local. No PBKDF2 needed: it is not derived from a (possibly weak)
+// user input but has the full 256 bits of entropy itself.
 async function merlinGetOrCreateKey() {
   const { encKeyRaw } = await browser.storage.local.get('encKeyRaw');
 
@@ -43,13 +37,13 @@ async function merlinGetOrCreateKey() {
   return crypto.subtle.importKey('raw', rawKey, 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
 
-// credsObj: { nextcloudUrl, username, appPassword }
+// credsObj: { nextcloudUrl, username, appPassword, backendKind }
 async function merlinEncryptCredentials(credsObj) {
   const key = await merlinGetOrCreateKey();
   const iv  = crypto.getRandomValues(new Uint8Array(12));
   const plaintext  = new TextEncoder().encode(JSON.stringify(credsObj));
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext);
-  // iv ist nicht geheim (Standard bei AES-GCM) — darf mit dem Chiffretext liegen.
+  // The IV is not secret (standard for AES-GCM) and may sit next to the ciphertext.
   return {
     v:          2,
     iv:         _merlinToBase64(iv),
