@@ -34,7 +34,7 @@ All notable changes to Merlin for Thunderbird are documented here. Format based 
 ### Changed
 - The add-on is now just called "Merlin".
 - Notifications show just "Merlin" as the title and the result as the text
-  (e.g. "Article added") instead of repeating it ("Merlin: Saved ✓").
+  ("Email saved" or "URL saved") instead of repeating it ("Merlin: Saved ✓").
 - Settings: the URL field is a normal field prefilled with `https://` instead
   of a fixed prefix, so a full URL can be pasted. A pasted URL replaces the
   prefix instead of being appended to it, and a host name without a scheme is

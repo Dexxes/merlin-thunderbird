@@ -129,7 +129,7 @@ test('direct link save', async () => {
   await env.ev.clicked.fire({ menuItemId: 'merlin-save-link', linkUrl: 'https://ex.org/a' }, { id: 1, type: 'mail' });
   assert.equal(env.fetches.at(-1)[0], 'https://cloud.example.com/index.php/apps/merlin/api/v1/add');
   assert.deepEqual(env.lastBody(), { url: 'https://ex.org/a' });
-  assert.deepEqual(env.lastNote(), [msg('notification_defaultTitle'), msg('flyout_articleAdded')]);
+  assert.deepEqual(env.lastNote(), [msg('notification_defaultTitle'), msg('flyout_urlSaved')]);
 });
 
 test('page save sends the HTML and reports unsupported sites', async () => {
@@ -177,7 +177,7 @@ test('"send email content" saves the displayed email', async () => {
   assert.equal(body.title, 'Hello');
   assert.equal(body.author, 'Anna');
   assert.match(body.html, /<p>Hi<\/p>\n<p>There &lt;b&gt;<\/p>/);
-  assert.equal(env.lastNote()[1], msg('flyout_articleAdded'));
+  assert.equal(env.lastNote()[1], msg('flyout_mailSaved'));
 });
 
 test('several selected emails are saved as separate articles', async () => {
@@ -243,7 +243,7 @@ test('page with tags: dialog is centered and the entry holds no credentials', as
   await tick();
   assert.equal(env.fetches.at(-1)[0], 'https://srv.example.com/api/articles');
   assert.deepEqual(env.lastBody(), { url: 'https://ex.org/p', tagIds: [1], html: '<html>page</html>' });
-  assert.equal(env.lastNote()[1], msg('flyout_articleAddedTagsFailed', ['Neu']));
+  assert.equal(env.lastNote()[1], msg('flyout_urlSavedTagsFailed', ['Neu']));
 });
 
 test('messages from other senders are ignored', async () => {

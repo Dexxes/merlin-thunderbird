@@ -394,6 +394,7 @@ async function buildMailPayload(header) {
   const url = `mail://message/${encodeURIComponent(cleanMessageId)}`;
 
   return {
+    kind: 'mail',
     url,
     html,
     title:  header.subject || null,
@@ -849,7 +850,9 @@ async function resolveTagIdsStandalone(nextcloudUrl, authHeader, tagNames) {
 // Sends one article to the server. Returns { ok, message } — `message` is
 // the text to show the user; `fatal` marks errors that will repeat for every
 // further article (stop a batch), `silent` that the user was already told.
-async function postArticle({ nextcloudUrl, username, appPassword, backendKind, url, tags = [], html = null, title = null, author = null }) {
+// `kind` only picks the wording of the success message: 'mail' → "Email
+// saved", anything else → "URL saved".
+async function postArticle({ nextcloudUrl, username, appPassword, backendKind, url, tags = [], html = null, title = null, author = null, kind = 'url' }) {
   if (!isAllowedServerUrl(nextcloudUrl)) {
     return { ok: false, fatal: true, message: t('flyout_httpBlocked') };
   }
@@ -915,13 +918,16 @@ async function postArticle({ nextcloudUrl, username, appPassword, backendKind, u
 
   // Confirm as soon as the server returns 2xx — content extraction runs
   // asynchronously on the server; no need to wait for it here.
+  const isMail = kind === 'mail';
   if (failedTags.length > 0) {
-    return { ok: true, message: t('flyout_articleAddedTagsFailed', [failedTags.join(', ')]) };
+    const key = isMail ? 'flyout_mailSavedTagsFailed' : 'flyout_urlSavedTagsFailed';
+    return { ok: true, message: t(key, [failedTags.join(', ')]) };
   }
   if (tags && tags.length > 0) {
-    return { ok: true, message: t('flyout_articleAddedWithTags', [tags.join(', ')]) };
+    const key = isMail ? 'flyout_mailSavedWithTags' : 'flyout_urlSavedWithTags';
+    return { ok: true, message: t(key, [tags.join(', ')]) };
   }
-  return { ok: true, message: t('flyout_articleAdded') };
+  return { ok: true, message: t(isMail ? 'flyout_mailSaved' : 'flyout_urlSaved') };
 }
 
 // Sends one article and reports the result as a notification.

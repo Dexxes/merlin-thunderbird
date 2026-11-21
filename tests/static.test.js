@@ -37,6 +37,7 @@ test('every message used in code, HTML and manifest exists', () => {
   for (const m of JSON.stringify(manifest).matchAll(/__MSG_(\w+)__/g)) used.add(m[1]);
   for (const f of sourceFiles) {
     const src = read(f);
+    for (const m of src.matchAll(/'((?:flyout|notification|options|saveDialog|contextMenu)_\w+)'/g)) used.add(m[1]);
     for (const m of src.matchAll(/\bt\('(\w+)'/g)) used.add(m[1]);
     for (const m of src.matchAll(/backendText\('(\w+)', '(\w+)'\)/g)) { used.add(m[1]); used.add(m[2]); }
     for (const m of src.matchAll(/data-i18n(?:-placeholder|-title)?="(\w+)"/g)) used.add(m[1]);

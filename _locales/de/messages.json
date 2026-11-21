@@ -80,6 +80,25 @@
   "flyout_mailReadFailed": {
     "message": "Die Mail konnte nicht gelesen werden."
   },
+  "flyout_mailSaved": {
+    "message": "Mail gespeichert"
+  },
+  "flyout_mailSavedTagsFailed": {
+    "message": "Mail gespeichert, aber diese Tags konnten nicht gesetzt werden: $tags$",
+    "placeholders": {
+      "tags": {
+        "content": "$1"
+      }
+    }
+  },
+  "flyout_mailSavedWithTags": {
+    "message": "Mail gespeichert mit [$tags$]",
+    "placeholders": {
+      "tags": {
+        "content": "$1"
+      }
+    }
+  },
   "flyout_mailsSaved": {
     "message": "Mails gespeichert: $count$",
     "placeholders": {
@@ -120,6 +139,25 @@
     "message": "Nicht unterstützt: $domain$ liefert keinen lesbaren Artikeltext.",
     "placeholders": {
       "domain": {
+        "content": "$1"
+      }
+    }
+  },
+  "flyout_urlSaved": {
+    "message": "URL gespeichert"
+  },
+  "flyout_urlSavedTagsFailed": {
+    "message": "URL gespeichert, aber diese Tags konnten nicht gesetzt werden: $tags$",
+    "placeholders": {
+      "tags": {
+        "content": "$1"
+      }
+    }
+  },
+  "flyout_urlSavedWithTags": {
+    "message": "URL gespeichert mit [$tags$]",
+    "placeholders": {
+      "tags": {
         "content": "$1"
       }
     }

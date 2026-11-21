@@ -80,6 +80,25 @@
   "flyout_mailReadFailed": {
     "message": "The email could not be read."
   },
+  "flyout_mailSaved": {
+    "message": "Email saved"
+  },
+  "flyout_mailSavedTagsFailed": {
+    "message": "Email saved, but these tags could not be applied: $tags$",
+    "placeholders": {
+      "tags": {
+        "content": "$1"
+      }
+    }
+  },
+  "flyout_mailSavedWithTags": {
+    "message": "Email saved [$tags$]",
+    "placeholders": {
+      "tags": {
+        "content": "$1"
+      }
+    }
+  },
   "flyout_mailsSaved": {
     "message": "Emails saved: $count$",
     "placeholders": {
@@ -120,6 +139,25 @@
     "message": "Not supported: $domain$ doesn't provide readable article text.",
     "placeholders": {
       "domain": {
+        "content": "$1"
+      }
+    }
+  },
+  "flyout_urlSaved": {
+    "message": "URL saved"
+  },
+  "flyout_urlSavedTagsFailed": {
+    "message": "URL saved, but these tags could not be applied: $tags$",
+    "placeholders": {
+      "tags": {
+        "content": "$1"
+      }
+    }
+  },
+  "flyout_urlSavedWithTags": {
+    "message": "URL saved [$tags$]",
+    "placeholders": {
+      "tags": {
         "content": "$1"
       }
     }
