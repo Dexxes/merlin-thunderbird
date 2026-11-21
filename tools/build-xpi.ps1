@@ -40,6 +40,7 @@ $includeFiles = @(
     'manifest.json',
     'background.js',
     'crypto.js',
+    'common.js',
     'i18n.js',
     'options.html',
     'options.js',
