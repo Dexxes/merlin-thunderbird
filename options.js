@@ -348,13 +348,18 @@ function refreshWelcomeText() {
 // ─── Test connection ──────────────────────────────────────────────────────────
 
 async function testConnection() {
-  const url = readServerUrl();
-
-  // Read stored credentials — they come from the login flow, not manual fields
-  const { username, appPassword, backendKind } = await getCredentials();
+  // Test exactly what the add-on will use: the stored URL, backend and
+  // credentials (they come from the login flow). The app password must never
+  // go to a URL that was only typed into the field afterwards.
+  const { nextcloudUrl: url, username, appPassword, backendKind } = await getCredentials();
 
   if (!url || !username || !appPassword) {
     showStatus(t('options_loginFirst'), 'error');
+    return;
+  }
+
+  if (readServerUrl() !== url || selectedBackendKind() !== (backendKind === 'standalone' ? 'standalone' : 'nextcloud')) {
+    showStatus(t('options_urlChangedLoginAgain'), 'error');
     return;
   }
 
