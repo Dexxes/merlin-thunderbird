@@ -261,6 +261,9 @@
   "options_testAuthFailed": {
     "message": "Authentication failed. Please log in again via \"Login with Nextcloud\"."
   },
+  "options_testAuthFailedStandalone": {
+    "message": "Authentication failed. Please log in again via \"Log in\"."
+  },
   "options_testButton": {
     "message": "Test connection"
   },
